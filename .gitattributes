@@ -1,0 +1,8 @@
+# Same line endings on Windows and Mac: LF in the repository.
+* text=auto
+
+# Never touch these
+*.stl  binary
+*.f3d  binary
+*.xlsx binary
+*.bin  binary
