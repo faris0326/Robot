@@ -41,8 +41,7 @@ bool     calActive = false;
 
 // One sensor's readings split into a low and a high group.
 struct Split {
-    float    lowRaw, highRaw;  // average raw reading of each group
-    uint32_t lowN, highN;      // samples in each group
+    float lowRaw, highRaw;  // average raw reading of each group
 };
 
 // Otsu's method: the split point that best separates the histogram into two
@@ -60,7 +59,7 @@ Split splitHistogram(const uint16_t* h) {
         sum += (float)h[b] * b;
     }
 
-    Split best = {0, 0, 0, 0};
+    Split best = {0, 0};
     float bestVar = -1.0f, lowSum = 0.0f;
     uint32_t lowN = 0;
     for (uint16_t t = 1; t < CAL_BINS; t++) {  // low group = bins below t
@@ -75,7 +74,7 @@ Split splitHistogram(const uint16_t* h) {
         if (var > bestVar) {
             bestVar = var;
             // Bin centre -> raw ADC value.
-            best = {(lowMean + 0.5f) * (1 << CAL_BIN_SHIFT), (highMean + 0.5f) * (1 << CAL_BIN_SHIFT), lowN, highN};
+            best = {(lowMean + 0.5f) * (1 << CAL_BIN_SHIFT), (highMean + 0.5f) * (1 << CAL_BIN_SHIFT)};
         }
     }
     return best;
@@ -170,7 +169,16 @@ SensorCal sensorsCalibration() {
     return c;
 }
 
-void sensorsSetCalibration(const SensorCal& c) {
+void sensorsSetCalibration(const SensorCal& in) {
+    // Raw is high over black: a black line must read above its background.
+    SensorCal c = in;
+    for (uint8_t i = 0; i < IR_COUNT; i++) {
+        if ((c.line[i] < c.background[i]) != LINE_IS_WHITE) {
+            uint16_t t = c.line[i];
+            c.line[i] = c.background[i];
+            c.background[i] = t;
+        }
+    }
     portENTER_CRITICAL(&calMux);
     cal = c;
     portEXIT_CRITICAL(&calMux);
@@ -186,25 +194,20 @@ bool sensorsCalibrateEnd(int8_t& badSensor) {
     badSensor = -1;
 
     Split split[IR_COUNT];
-    uint32_t lowN = 0, highN = 0;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
         split[i] = splitHistogram(calHist[i]);
         if (split[i].highRaw - split[i].lowRaw < IR_CAL_MIN_CONTRAST) {
             badSensor = i;
             return false;
         }
-        lowN += split[i].lowN;
-        highN += split[i].highN;
     }
 
-    // The spin keeps the sensors over the background most of the time, so
-    // the smaller group (over all sensors) is the line: low = white line.
-    bool lineIsWhite = lowN < highN;
+    // Raw is high over black: the high group is a black line's reading.
     SensorCal c;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
         uint16_t lo = (uint16_t)lroundf(split[i].lowRaw), hi = (uint16_t)lroundf(split[i].highRaw);
-        c.background[i] = lineIsWhite ? hi : lo;
-        c.line[i]       = lineIsWhite ? lo : hi;
+        c.background[i] = LINE_IS_WHITE ? hi : lo;
+        c.line[i]       = LINE_IS_WHITE ? lo : hi;
     }
     sensorsSetCalibration(c);
     return true;

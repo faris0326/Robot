@@ -43,7 +43,8 @@ static_assert(MAX_DUTY > 0.0f && MAX_DUTY <= 1.0f, "rated voltage must not excee
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
-// No start button: wait this long after boot before the motors may move.
+// The robot boots in Stop (BOOT_MODE): pick Auto on the phone to start.
+// Whatever the mode, the motors can't move until this long after boot.
 constexpr uint32_t START_DELAY_MS = 3000;
 
 // ---------------------------------------------------------------------------
@@ -60,10 +61,10 @@ constexpr uint8_t IR_COUNT = 8;
 constexpr uint8_t PIN_IR[IR_COUNT] = {9, 8, 7, 6, 5, 4, 2, 1};  // D8..D1, left -> right
 constexpr uint8_t PIN_IR_LED = 11;  // the board's IR pin: HIGH = emitters on
 
-// Line colour until the robot is calibrated (calibration measures it and
-// replaces this). The race track (Cytron) is a black line on white; true =
-// a white line on a dark surface.
-constexpr bool LINE_IS_WHITE = true;
+// Line colour. The race track (Cytron) is a black line on white (false);
+// true = a white line on a dark surface. Calibration measures the two
+// readings and uses this to know which one is the line.
+constexpr bool LINE_IS_WHITE = false;
 
 // Position weight per sensor, left -> right (evenly spaced). Only the ratios
 // matter: readPosition() scales them so the outermost sensor gives -1 / +1.
@@ -139,7 +140,7 @@ constexpr uint32_t GAP_TIMEOUT_MS  = 2000;
 // (live KP/KD), so the robot turns on the spot to keep the line in the middle.
 enum class DriveMode : uint8_t { Auto = 0, Manual = 1, Stop = 2, Calibrate = 3, Hold = 4 };
 
-constexpr DriveMode BOOT_MODE = DriveMode::Auto;  // mode after power-on
+constexpr DriveMode BOOT_MODE = DriveMode::Stop;  // mode after power-on: don't move until told
 
 // Manual: phone joystick. Throttle and steer are mixed into left/right
 // speed, then scaled so full stick gives at most MANUAL_MAX_SPEED.

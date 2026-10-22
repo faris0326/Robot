@@ -1,6 +1,6 @@
 // Line follower main. Which program runs is chosen by the PlatformIO env:
 //   robot (default)  control loop on core 1, Wi-Fi telemetry on core 0;
-//                    motors start START_DELAY_MS after boot
+//                    boots in Stop: choose a mode on the phone
 //   sensortest       print IR readings, motors stay braked
 //   steertest        control runs with motors live (wheels lifted), prints L/R
 //   motortest        Phase 1 motor test
@@ -46,9 +46,9 @@ void setup() {
     if (saved) sharedSetTuning(t);
     t = sharedTuning();
     Serial.printf("\nLine follower. Tuning from %s: speed=%.2f KP=%.2f KD=%.3f trim=%.2f. "
-                  "Starting in %lu ms\n",
+                  "%s line. Stopped: choose Auto on the phone\n",
                   saved ? "flash" : "config.h", t.autoSpeed, t.kp, t.kd, t.trim,
-                  (unsigned long)START_DELAY_MS);
+                  LINE_IS_WHITE ? "White" : "Black");
     controlTaskStart();  // core 1
     telemetryStart();    // core 0
 #endif
