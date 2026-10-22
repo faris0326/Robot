@@ -24,7 +24,7 @@ void controlReset() {
     deriv = 0.0f;
 }
 
-void controlUpdate(float position, float dt, float& left, float& right) {
+float controlCorrection(float position, float dt) {
     if (primed && dt > 0.0f) {
         float raw = (position - prevPos) / dt;
         float a = dt / (KD_FILTER_MS * 1e-3f + dt);  // first-order low-pass
@@ -34,7 +34,11 @@ void controlUpdate(float position, float dt, float& left, float& right) {
     primed = true;
 
     // Line to the left (position < 0) -> slow the left wheel.
-    float correction = gains.kp * position + gains.kd * deriv;
+    return gains.kp * position + gains.kd * deriv;
+}
+
+void controlUpdate(float position, float dt, float& left, float& right) {
+    float correction = controlCorrection(position, dt);
     float l = gains.base + correction;
     float r = gains.base - correction;
 

@@ -74,7 +74,7 @@ li .d { color: var(--muted); font-size: 13px; }
 li.best, li.best .d { color: var(--ok); }
 .empty { color: var(--muted); font-size: 13px; margin-top: 6px; }
 [hidden] { display: none !important; }
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .seg button {
   font: inherit; font-weight: 600; padding: 12px 0; border-radius: 10px; cursor: pointer;
   border: 1px solid var(--line); background: var(--bg); color: var(--text);
@@ -124,8 +124,17 @@ input[type=range] { width: 100%; height: 32px; margin: 4px 0 0; accent-color: va
   <div class="seg" id="modeSeg">
     <button data-mode="0">Auto</button>
     <button data-mode="1">Manual</button>
+    <button data-mode="4">Center test</button>
     <button data-mode="2" class="stop">Stop</button>
   </div>
+</section>
+
+<section class="card" id="holdCard" hidden>
+  <div class="label">Center test</div>
+  <div class="hint">The robot stays in place and only turns to keep the line in the middle, with the
+    KP and KD sliders below. Slide or twist it so the line moves off-centre and watch it come back.
+    Good: it returns quickly and stops in the middle. Swings past the middle and back → lower KP or
+    raise KD. Slow, or stops short of the middle → raise KP.</div>
 </section>
 
 <section class="card" id="driveCard" hidden>
@@ -319,7 +328,7 @@ function onBinary(buf) {
       r: dv.getInt16(12, true) / 1e4,
       state: dv.getUint8(14),
       running: (dv.getUint8(15) & 1) !== 0,
-      mode: (dv.getUint8(15) >> 1) & 3,
+      mode: (dv.getUint8(15) >> 1) & 7,
       lap: dv.getUint16(16, true),
       lastLap: dv.getUint32(20, true),
       loopUs: dv.getUint16(24, true),
@@ -562,7 +571,8 @@ function onStats(m) {
 }
 
 // ---- Tuning sliders ------------------------------------------------------
-// Order matches the 0x12 message: auto speed, manual max, kp, kd, trim.
+// Order matches the 0x12 message: auto speed, manual max, kp, kd, trim,
+// corner brake ms, spin speed.
 // Slider values are in display units; scale converts to the robot's value.
 const TUNE = [
   { key: "autoSpeed", cfg: "BASE_SPEED", label: "Auto speed", min: 0, max: 100, step: 1, scale: 100,
@@ -575,6 +585,10 @@ const TUNE = [
     fmt: (v) => v.toFixed(3) },
   { key: "trim", cfg: "MOTOR_TRIM", label: "Motor balance", min: -50, max: 50, step: 1, scale: 100,
     fmt: (v) => v > 0 ? `right −${v}%` : v < 0 ? `left −${-v}%` : "even" },
+  { key: "brakeMs", cfg: "CORNER_BRAKE_MS", label: "Corner brake · full reverse", min: 0, max: 200, step: 5, scale: 1,
+    dp: 0, fmt: (v) => v ? `${v} ms` : "off" },
+  { key: "pivot", cfg: "PIVOT_SPEED", label: "Corner spin speed", min: 10, max: 100, step: 5, scale: 100,
+    fmt: (v) => `${v}% · ${(v / 100 * motorV).toFixed(1)} V` },
 ];
 let sliderBusy = false;   // finger on a slider: don't overwrite it from the robot
 let tuneSentAt = 0, tuneTimer = null;
@@ -610,7 +624,7 @@ const tuneValue = (t) => Number(t.input.value) / t.scale;
 function updateTuneLabels() {
   for (const t of TUNE) t.out.textContent = t.fmt(Number(t.input.value));
   // The same values as config.h lines, to copy in once tuning is done.
-  $("tuneCfg").textContent = TUNE.map((t) => `${t.cfg} ${tuneValue(t).toFixed(t.key === "kd" ? 3 : 2)}`).join(" · ");
+  $("tuneCfg").textContent = TUNE.map((t) => `${t.cfg} ${tuneValue(t).toFixed(t.dp ?? (t.key === "kd" ? 3 : 2))}`).join(" · ");
 }
 const SAVE_TEXT = {
   saved: "✓ Saved, kept after power-off",
@@ -626,7 +640,7 @@ function showTuning(m) {
     el.className = `save ${m.save}`;
   }
   if (sliderBusy || m.autoSpeed === undefined) return;
-  for (const t of TUNE) t.input.value = String(+(m[t.key] * t.scale).toFixed(6));
+  for (const t of TUNE) if (m[t.key] !== undefined) t.input.value = String(+(m[t.key] * t.scale).toFixed(6));
   updateTuneLabels();
 }
 function sendTuning() {
@@ -644,6 +658,7 @@ $("resetTune").addEventListener("click", () => {
 // ---- Drive mode and manual control ---------------------------------------
 const MODE_MANUAL = 1;
 const MODE_CALIBRATE = 3;   // robot spins to calibrate the sensors, then goes to Stop
+const MODE_HOLD = 4;        // center test: turns on the spot to keep the line centred
 const DRIVE_HZ = 30;                  // must beat the robot's MANUAL_TIMEOUT_MS
 const joy = { x: 0, y: 0, active: false };
 let pendingMode = null, pendingUntil = 0;
@@ -717,6 +732,7 @@ function renderMode(stale) {
     document.querySelectorAll("#modeSeg button").forEach((b) =>
       b.classList.toggle("on", Number(b.dataset.mode) === m));
     $("driveCard").hidden = m !== MODE_MANUAL;
+    $("holdCard").hidden = m !== MODE_HOLD;
     if (m === MODE_MANUAL) drawKnob();
     if (m === MODE_CALIBRATE) showCal("running");
     $("calBtn").disabled = m === MODE_CALIBRATE;
@@ -811,7 +827,7 @@ function tick(now) {
 // Simulates the robot side, including modes, manual mixing and the dead-man timeout.
 function startDemo() {
   connected = true;
-  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0 };
+  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0, brakeMs: 40, pivot: 0.6 };
   const tu = { ...DEFAULTS, save: "defaults" };
   let changedT = 0;
   const N = 8;
@@ -830,7 +846,7 @@ function startDemo() {
       driveT = performance.now() - t0;
     }
     if (dv.getUint8(0) === 0x12) {
-      ["autoSpeed", "manualMax", "kp", "kd", "trim"].forEach((k, i) => { tu[k] = dv.getFloat32(1 + 4 * i, true); });
+      TUNE.forEach((t, i) => { tu[t.key] = dv.getFloat32(1 + 4 * i, true); });
       tu.save = "pending"; changedT = performance.now() - t0;
       showTuning(tu);  // the robot echoes the tuning to every phone
     }
@@ -875,6 +891,9 @@ function startDemo() {
       l = thr + steer; r = thr - steer;
       const big = Math.max(Math.abs(l), Math.abs(r)); if (big > 1) { l /= big; r /= big; }
       l *= tu.manualMax * trimL(); r *= tu.manualMax * trimR();
+    } else if (t > 3000 && mode === 4) {
+      const corr = Math.max(-1, Math.min(1, tu.kp * pos + tu.kd * dpos));
+      l = corr * trimL(); r = -corr * trimR();
     } else if (t > 3000 && mode === 3) {
       const ct = t - calT;
       if (ct < CAL_MS) {

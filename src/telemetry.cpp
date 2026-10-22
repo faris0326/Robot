@@ -72,7 +72,7 @@ size_t encodeSample(const TelemetrySample& s, const PowerStats& pw, uint8_t* f) 
     put16(f + 10, scaled(s.dutyLeft));
     put16(f + 12, scaled(s.dutyRight));
     put8(f + 14, s.lineState);
-    put8(f + 15, (s.running ? 1 : 0) | ((uint8_t)s.mode & 3) << 1);
+    put8(f + 15, (s.running ? 1 : 0) | ((uint8_t)s.mode & 7) << 1);
     put16(f + 16, s.lap);
     put32(f + 20, s.lastLapMs);
     put16(f + 24, s.loopMaxUs);
@@ -130,12 +130,12 @@ void formatTuning(char* out, size_t n) {
     Tuning t = sharedTuning();
     snprintf(out, n,
              "\"autoSpeed\":%.3f,\"manualMax\":%.3f,\"kp\":%.3f,\"kd\":%.4f,\"trim\":%.3f,"
-             "\"save\":\"%s\"",
-             t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, saveStatus());
+             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"save\":\"%s\"",
+             t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, saveStatus());
 }
 
 void sendHello(uint8_t client) {
-    char tune[160];
+    char tune[200];
     formatTuning(tune, sizeof tune);
     char msg[384];
     snprintf(msg, sizeof msg,
@@ -172,9 +172,9 @@ void serviceCalibration() {
 
 // Tell every phone the current tuning, so all sliders agree.
 void broadcastTuning() {
-    char tune[160];
+    char tune[200];
     formatTuning(tune, sizeof tune);
-    char msg[192];
+    char msg[240];
     snprintf(msg, sizeof msg, "{\"type\":\"tuning\",%s}", tune);
     ws.broadcastTXT(msg);
 }
@@ -207,12 +207,19 @@ float getF32(const uint8_t* p) {  // little-endian IEEE 754, same as the ESP32
 }
 
 void onCommand(const uint8_t* p, size_t len) {
-    if (len >= 2 && p[0] == CMD_MODE && p[1] <= (uint8_t)DriveMode::Calibrate) {
+    if (len >= 2 && p[0] == CMD_MODE && p[1] <= (uint8_t)DriveMode::Hold) {
         sharedSetMode((DriveMode)p[1]);
     } else if (len >= 5 && p[0] == CMD_DRIVE) {
         sharedSetDrive(get16(p + 1) / 10000.0f, get16(p + 3) / 10000.0f);
     } else if (len >= 21 && p[0] == CMD_TUNING) {
-        sharedSetTuning({getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17)});
+        Tuning t = sharedTuning();
+        t = {getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17),
+             t.cornerBrakeMs, t.pivotSpeed};
+        if (len >= 29) {
+            t.cornerBrakeMs = getF32(p + 21);
+            t.pivotSpeed = getF32(p + 25);
+        }
+        sharedSetTuning(t);
         saveState = SaveState::Pending;
         tuningChangedMs = millis();
         broadcastTuning();
@@ -227,10 +234,12 @@ void onCommand(const uint8_t* p, size_t len) {
     }
 }
 
-// Flash writes briefly pause both cores, so none happen while Auto drives.
+// Flash writes briefly pause both cores, so none happen while Auto (or the
+// Center test, which steers the same way) drives.
 bool autoDriving() {
     TelemetrySample s = sharedLatest();
-    return s.mode == DriveMode::Auto && s.running && (s.dutyLeft != 0.0f || s.dutyRight != 0.0f);
+    return (s.mode == DriveMode::Auto || s.mode == DriveMode::Hold) && s.running &&
+           (s.dutyLeft != 0.0f || s.dutyRight != 0.0f);
 }
 
 // Write changed tuning to flash once the sliders have settled, but not while

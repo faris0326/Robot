@@ -25,6 +25,7 @@ uint32_t  bits = 0;
 LineState state = LineState::Lost;
 float     lastSeen = 0.0f;
 int8_t    lastSide = 0;    // -1 / +1: side the line was last clearly seen on
+int8_t    corner = 0;      // -1 / +1: a corner to that side is under the array
 float     weightScale = 1.0f;  // maps the outermost weight to +/-1
 
 // The calibration is used on core 1 and copied for saving on core 0.
@@ -126,6 +127,7 @@ float readPosition() {
         }
     }
 
+    corner = 0;
     if (best < IR_ON_LINE) {
         state = LineState::Lost;
         if (lastSide != 0) return lastSide;
@@ -143,10 +145,14 @@ float readPosition() {
     bool leftEdge = level[0] > IR_ON_LINE, rightEdge = level[IR_COUNT - 1] > IR_ON_LINE;
     if (leftEdge != rightEdge) lastSide = leftEdge ? -1 : 1;
     else if (fabsf(lastSeen) > LOST_SIDE_MIN) lastSide = lastSeen < 0.0f ? -1 : 1;
+
+    // A corner's side branch makes the line wide and reaches one outer sensor.
+    if (leftEdge != rightEdge && __builtin_popcount(bits) >= CORNER_MIN_SENSORS) corner = lastSide;
     return lastSeen;
 }
 
 uint32_t  sensorsBits() { return bits; }
+int8_t    sensorsCorner() { return corner; }
 LineState lineState()   { return state; }
 
 void sensorsLevels(uint8_t* out) {

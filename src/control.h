@@ -17,6 +17,10 @@ ControlGains controlGetGains();
 // stale position doesn't produce a derivative kick.
 void controlReset();
 
+// PD steering correction: the speed difference added to the left wheel and
+// taken from the right (line left = negative). Updates the derivative.
+float controlCorrection(float position, float dt);
+
 // position: -1..+1 from readPosition(). dt: seconds since the last call.
 void controlUpdate(float position, float dt, float& left, float& right);
 

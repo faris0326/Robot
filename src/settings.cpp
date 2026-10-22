@@ -10,7 +10,7 @@ namespace {
 
 constexpr char     NVS_NAMESPACE[] = "tuning";
 constexpr char     NVS_KEY[] = "t";
-constexpr uint16_t RECORD_VERSION = 1;  // bump when Tuning changes shape
+constexpr uint16_t RECORD_VERSION = 2;  // bump when Tuning changes shape
 
 struct Record {
     uint16_t version;
@@ -18,19 +18,28 @@ struct Record {
     Tuning   tuning;
 };
 
-// FNV-1a over the default values: changes whenever config.h defaults change.
-uint32_t defaultsHash() {
+// Version 1 had only the first five Tuning fields (no corner brake / spin).
+constexpr size_t V1_FIELDS = 5;
+struct RecordV1 {
+    uint16_t version;
+    uint32_t defaultsHash;
+    float    fields[V1_FIELDS];
+};
+
+// FNV-1a over the first `bytes` of the default values: changes whenever the
+// config.h defaults change.
+uint32_t defaultsHash(size_t bytes = sizeof(Tuning)) {
     Tuning d = settingsDefaults();
     const uint8_t* p = reinterpret_cast<const uint8_t*>(&d);
     uint32_t h = 2166136261u;
-    for (size_t i = 0; i < sizeof d; i++) h = (h ^ p[i]) * 16777619u;
+    for (size_t i = 0; i < bytes; i++) h = (h ^ p[i]) * 16777619u;
     return h;
 }
 
 }  // namespace
 
 Tuning settingsDefaults() {
-    return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM};
+    return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM, CORNER_BRAKE_MS, PIVOT_SPEED};
 }
 
 bool settingsLoad(Tuning& out) {
@@ -39,15 +48,28 @@ bool settingsLoad(Tuning& out) {
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
 
-    Record r;
+    union {
+        Record   v2;
+        RecordV1 v1;
+    } r;
     size_t len = sizeof r;
-    bool ok = nvs_get_blob(h, NVS_KEY, &r, &len) == ESP_OK && len == sizeof r &&
-              r.version == RECORD_VERSION &&
-              r.defaultsHash == defaultsHash();
+    bool read = nvs_get_blob(h, NVS_KEY, &r, &len) == ESP_OK;
     nvs_close(h);
+    if (!read) return false;
 
-    if (ok) out = r.tuning;
-    return ok;
+    if (len == sizeof r.v2 && r.v2.version == RECORD_VERSION && r.v2.defaultsHash == defaultsHash()) {
+        out = r.v2.tuning;
+        return true;
+    }
+    // Saved before the corner settings existed: keep the five saved fields,
+    // the new ones start from config.h.
+    static_assert(sizeof(float) * V1_FIELDS == offsetof(Tuning, cornerBrakeMs), "v1 = first five fields");
+    if (len == sizeof r.v1 && r.v1.version == 1 && r.v1.defaultsHash == defaultsHash(sizeof r.v1.fields)) {
+        out = settingsDefaults();
+        memcpy(&out, r.v1.fields, sizeof r.v1.fields);
+        return true;
+    }
+    return false;
 }
 
 bool settingsSave(const Tuning& t) {

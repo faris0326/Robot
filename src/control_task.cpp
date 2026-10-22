@@ -46,6 +46,29 @@ void manualStep(const DriveCommand& cmd, const Tuning& t) {
     motorsSet(l, r);
 }
 
+// Corner brake: full reverse on both wheels, once per corner (see config.h).
+bool     brakeArmed = false;
+uint32_t brakeUntilMs = 0;
+uint32_t plainSinceMs = 0;  // following a plain line (no corner) since
+
+// True while braking. Fires when a corner shows or the line is lost, if the
+// robot has followed a plain line for CORNER_REARM_MS since the last brake.
+bool cornerBrake(LineState state, const Tuning& t) {
+    uint32_t now = millis();
+    int8_t corner = sensorsCorner();
+    if (state != LineState::OnLine || corner != 0) {
+        plainSinceMs = now;
+    } else if (now - plainSinceMs >= CORNER_REARM_MS) {
+        brakeArmed = true;
+    }
+
+    if (brakeArmed && t.cornerBrakeMs >= 1.0f && (corner != 0 || state == LineState::Lost)) {
+        brakeArmed = false;
+        brakeUntilMs = now + (uint32_t)t.cornerBrakeMs;
+    }
+    return (int32_t)(brakeUntilMs - now) > 0;
+}
+
 bool     calibrating = false;
 uint32_t calStartMs = 0;
 
@@ -86,6 +109,13 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         sensorsCalibrateAbort();
     }
 
+    // The corner brake only arms while following the line in Auto.
+    if (!running || cmd.mode != DriveMode::Auto) {
+        brakeArmed = false;
+        brakeUntilMs = 0;
+        plainSinceMs = millis();
+    }
+
     if (!running || cmd.mode == DriveMode::Stop) {
         motorsStop();
         return pos;
@@ -109,23 +139,40 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         uint32_t timeout = state == LineState::Lost ? LOST_TIMEOUT_MS : GAP_TIMEOUT_MS;
         if (millis() - lostSinceMs > timeout) {
             motorsStop();
-            return pos;
-        }
-        // Lost past a sharp corner: spin on the spot toward the side the line
-        // went (pos = -1 / +1) until a sensor finds it again. Line following
-        // then restarts with a fresh derivative (following stays false).
-        if (state == LineState::Lost && pos != 0.0f) {
-            float s = pos < 0.0f ? -PIVOT_SPEED : PIVOT_SPEED;
-            motorsSet(s, -s);  // line left: left wheel back, right forward
+            plainSinceMs = millis();  // re-arm only after following again
             return pos;
         }
     } else {
         wasLost = false;
     }
 
+    // Kill the speed before a sharp corner. Line following restarts with a
+    // fresh derivative afterwards (following stays false).
+    bool hold = cmd.mode == DriveMode::Hold;
+    if (!hold && cornerBrake(state, t)) {
+        motorsSet(-1.0f, -1.0f);
+        return pos;
+    }
+
+    // Lost past a sharp corner: spin on the spot toward the side the line
+    // went (pos = -1 / +1) until a sensor finds it again.
+    if (state == LineState::Lost && pos != 0.0f) {
+        float s = pos < 0.0f ? -t.pivotSpeed : t.pivotSpeed;
+        motorsSet(s, -s);  // line left: left wheel back, right forward
+        return pos;
+    }
+
     // Line following (re)starts: no derivative from a stale position.
     if (!wasFollowing) controlReset();
     following = true;
+
+    // Center test: the same steering with no forward speed, so the robot
+    // turns on the spot (line left: left wheel back, right forward).
+    if (hold) {
+        float c = constrain(controlCorrection(pos, dt), -1.0f, 1.0f);
+        motorsSet(c, -c);
+        return pos;
+    }
 
     float l, r;
     controlUpdate(pos, dt, l, r);

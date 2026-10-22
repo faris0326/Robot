@@ -37,6 +37,9 @@ float readPosition();
 
 // From the last read; bit i set = sensor i level above IR_ON_LINE, bit 0 = leftmost.
 uint32_t  sensorsBits();
+// -1 / +1 when a sharp corner to that side is under the array (a wide line,
+// at least CORNER_MIN_SENSORS, reaching one outer sensor), else 0.
+int8_t    sensorsCorner();
 LineState lineState();
 void      sensorsLevels(uint8_t* out);        // IR_COUNT levels, 0..255
 void      sensorsRaw(uint16_t* out);          // IR_COUNT raw ADC values

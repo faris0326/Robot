@@ -110,6 +110,16 @@ constexpr float KD_FILTER_MS = 10.0f;
 // Sharp (90-degree) corners: when no sensor sees the line, the robot spins on
 // the spot toward the side it went, wheels in opposite directions.
 constexpr float PIVOT_SPEED   = 0.60f;  // fraction of rated voltage
+// Corner brake: both wheels in full reverse for this long, once per corner,
+// when the corner shows or the line is lost, so the robot doesn't slide past
+// the corner before it can spin back to it. 0 = off. Live on the phone.
+constexpr float    CORNER_BRAKE_MS    = 40.0f;
+// A corner shows as a wide line: at least this many sensors on the line,
+// reaching one outer sensor (a followed line covers 2-3 sensors).
+constexpr uint8_t  CORNER_MIN_SENSORS = 4;
+// The brake re-arms after this long following a plain line, so it can't fire
+// again in the same corner, nor from a standstill right after a start.
+constexpr uint32_t CORNER_REARM_MS    = 200;
 // A position beyond this (either side) marks which way the line went, when
 // no outer sensor saw it alone.
 constexpr float LOST_SIDE_MIN = 0.20f;
@@ -125,7 +135,9 @@ constexpr uint32_t GAP_TIMEOUT_MS  = 2000;
 // Drive modes, switched from the phone page
 // ---------------------------------------------------------------------------
 // Calibrate runs the sensor calibration spin, then switches to Stop.
-enum class DriveMode : uint8_t { Auto = 0, Manual = 1, Stop = 2, Calibrate = 3 };
+// Hold = the phone's "Center test": no forward speed, only the PD steering
+// (live KP/KD), so the robot turns on the spot to keep the line in the middle.
+enum class DriveMode : uint8_t { Auto = 0, Manual = 1, Stop = 2, Calibrate = 3, Hold = 4 };
 
 constexpr DriveMode BOOT_MODE = DriveMode::Auto;  // mode after power-on
 

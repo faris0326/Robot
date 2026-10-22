@@ -25,6 +25,8 @@ struct Tuning {
     float kp;         //                                          (KP)
     float kd;         //                                          (KD)
     float trim;       // motor balance, > 0 slows the right motor (MOTOR_TRIM)
+    float cornerBrakeMs;  // reverse both wheels this long per corner (CORNER_BRAKE_MS)
+    float pivotSpeed;     // spin speed when the line is lost        (PIVOT_SPEED)
 };
 
 struct TelemetrySample {
