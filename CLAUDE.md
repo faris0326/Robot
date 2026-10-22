@@ -41,7 +41,7 @@ A single +5 V rail (MINI560 output, through the rocker switch) feeds the ESP32 5
 
 History, old 5-channel digital array (sensortest, twice): O1 was the leftmost sensor. The old digital array output LOW on black (setting removed with it). Lesson kept: check sensor polarity with the in-air test (no reflection = black), not a guess.
 
-Line colour is set by `LINE_IS_WHITE`: **`false` = black line on white** (user, 2026-10-22, the race track). Calibration measures the two readings per sensor and this setting says which one is the line (auto-detecting the colour from the spin was tried earlier the same day and replaced, so a wrong guess can't flip it). `sensorsSetCalibration()` swaps a sensor's readings if they're the wrong way round for the setting, so a saved calibration survives a colour change. Sensor bits always mean "on the line", whatever the colour.
+Line colour is set by `LINE_IS_WHITE`: **`true` = white line on a dark surface** (user, 2026-10-22; set `false` for the black-line race track). Calibration measures the two readings per sensor and this setting says which one is the line (auto-detecting the colour from the spin was tried earlier the same day and replaced, so a wrong guess can't flip it). `sensorsSetCalibration()` swaps a sensor's readings if they're the wrong way round for the setting, so a saved calibration survives a colour change. Sensor bits always mean "on the line", whatever the colour.
 
 ## Constraints and decisions
 - **Analog sensor reading** (since 2026-10-21, with the QTR-8A clone). Digital reading was used first.

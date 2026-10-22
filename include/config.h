@@ -64,7 +64,7 @@ constexpr uint8_t PIN_IR_LED = 11;  // the board's IR pin: HIGH = emitters on
 // Line colour. The race track (Cytron) is a black line on white (false);
 // true = a white line on a dark surface. Calibration measures the two
 // readings and uses this to know which one is the line.
-constexpr bool LINE_IS_WHITE = false;
+constexpr bool LINE_IS_WHITE = true;
 
 // Position weight per sensor, left -> right (evenly spaced). Only the ratios
 // matter: readPosition() scales them so the outermost sensor gives -1 / +1.
