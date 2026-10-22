@@ -1,6 +1,7 @@
 #include "sensors.h"
 
 #include <Arduino.h>
+#include <string.h>
 
 namespace {
 
@@ -23,13 +24,61 @@ float     level[IR_COUNT];
 uint32_t  bits = 0;
 LineState state = LineState::Lost;
 float     lastSeen = 0.0f;
+int8_t    lastSide = 0;    // -1 / +1: side the line was last clearly seen on
 float     weightScale = 1.0f;  // maps the outermost weight to +/-1
 
 // The calibration is used on core 1 and copied for saving on core 0.
 portMUX_TYPE calMux = portMUX_INITIALIZER_UNLOCKED;
 SensorCal    cal;
-SensorCal    calRun;          // min/max being recorded during a calibration
-bool         calActive = false;
+
+// Readings recorded during a calibration run (core 1 only): a histogram per
+// sensor, CAL_BIN_SHIFT = 5 -> 32 raw counts (~25 mV) per bin.
+constexpr uint8_t CAL_BIN_SHIFT = 5;
+constexpr uint16_t CAL_BINS = 4096 >> CAL_BIN_SHIFT;
+uint16_t calHist[IR_COUNT][CAL_BINS];
+bool     calActive = false;
+
+// One sensor's readings split into a low and a high group.
+struct Split {
+    float    lowRaw, highRaw;  // average raw reading of each group
+    uint32_t lowN, highN;      // samples in each group
+};
+
+// Otsu's method: the split point that best separates the histogram into two
+// groups (largest between-group variance). Single stray readings barely move
+// the group averages, unlike a plain min/max, and each group must hold at
+// least 1/CAL_MIN_GROUP of the samples (24 ms of a 2.4 s spin), so a few
+// stray readings can't pose as the line.
+constexpr uint32_t CAL_MIN_GROUP = 100;
+
+Split splitHistogram(const uint16_t* h) {
+    uint32_t n = 0;
+    float    sum = 0.0f;
+    for (uint16_t b = 0; b < CAL_BINS; b++) {
+        n += h[b];
+        sum += (float)h[b] * b;
+    }
+
+    Split best = {0, 0, 0, 0};
+    float bestVar = -1.0f, lowSum = 0.0f;
+    uint32_t lowN = 0;
+    for (uint16_t t = 1; t < CAL_BINS; t++) {  // low group = bins below t
+        lowN += h[t - 1];
+        lowSum += (float)h[t - 1] * (t - 1);
+        uint32_t highN = n - lowN;
+        uint32_t minN = max<uint32_t>(1, n / CAL_MIN_GROUP);
+        if (lowN < minN || highN < minN) continue;
+        float lowMean = lowSum / lowN, highMean = (sum - lowSum) / highN;
+        float d = highMean - lowMean;
+        float var = (float)lowN * highN * d * d;
+        if (var > bestVar) {
+            bestVar = var;
+            // Bin centre -> raw ADC value.
+            best = {(lowMean + 0.5f) * (1 << CAL_BIN_SHIFT), (highMean + 0.5f) * (1 << CAL_BIN_SHIFT), lowN, highN};
+        }
+    }
+    return best;
+}
 
 }  // namespace
 
@@ -44,8 +93,8 @@ void sensorsBegin() {
     for (uint8_t i = 0; i < IR_COUNT; i++) {
         pinMode(PIN_IR[i], INPUT);
         maxWeight = max(maxWeight, fabsf(IR_WEIGHTS[i]));
-        cal.min[i] = IR_DEFAULT_MIN;
-        cal.max[i] = IR_DEFAULT_MAX;
+        cal.background[i] = LINE_IS_WHITE ? IR_DEFAULT_BLACK : IR_DEFAULT_WHITE;
+        cal.line[i]       = LINE_IS_WHITE ? IR_DEFAULT_WHITE : IR_DEFAULT_BLACK;
     }
     weightScale = maxWeight > 0.0f ? 1.0f / maxWeight : 1.0f;
 }
@@ -55,18 +104,18 @@ float readPosition() {
 
     if (calActive) {
         for (uint8_t i = 0; i < IR_COUNT; i++) {
-            calRun.min[i] = min(calRun.min[i], raw[i]);
-            calRun.max[i] = max(calRun.max[i], raw[i]);
+            uint16_t& c = calHist[i][raw[i] >> CAL_BIN_SHIFT];
+            if (c < UINT16_MAX) c++;
         }
     }
 
     bits = 0;
     float sum = 0.0f, total = 0.0f, best = 0.0f;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
-        float span = max(1, (int)cal.max[i] - (int)cal.min[i]);
-        // Raw is high over black, so for a white line the level is inverted.
-        float v = constrain(((int)raw[i] - (int)cal.min[i]) / span, 0.0f, 1.0f);
-        if (LINE_IS_WHITE) v = 1.0f - v;
+        // Negative span = the line reads lower than the background (white line).
+        float span = (int)cal.line[i] - (int)cal.background[i];
+        if (fabsf(span) < 1.0f) span = 1.0f;
+        float v = constrain(((int)raw[i] - (int)cal.background[i]) / span, 0.0f, 1.0f);
         level[i] = v;
 
         if (v > IR_ON_LINE) bits |= 1u << i;
@@ -79,6 +128,7 @@ float readPosition() {
 
     if (best < IR_ON_LINE) {
         state = LineState::Lost;
+        if (lastSide != 0) return lastSide;
         if (lastSeen < 0.0f) return -1.0f;
         if (lastSeen > 0.0f) return 1.0f;
         return 0.0f;
@@ -86,6 +136,13 @@ float readPosition() {
 
     state = LineState::OnLine;
     lastSeen = constrain(sum / total * weightScale, -1.0f, 1.0f);
+
+    // Which way the line went. At a 90-degree corner the side branch reaches
+    // one outer sensor, then the line can vanish under the middle sensors
+    // last, so the sign of the very last position would be a guess.
+    bool leftEdge = level[0] > IR_ON_LINE, rightEdge = level[IR_COUNT - 1] > IR_ON_LINE;
+    if (leftEdge != rightEdge) lastSide = leftEdge ? -1 : 1;
+    else if (fabsf(lastSeen) > LOST_SIDE_MIN) lastSide = lastSeen < 0.0f ? -1 : 1;
     return lastSeen;
 }
 
@@ -114,23 +171,36 @@ void sensorsSetCalibration(const SensorCal& c) {
 }
 
 void sensorsCalibrateBegin() {
-    for (uint8_t i = 0; i < IR_COUNT; i++) {
-        calRun.min[i] = 4095;
-        calRun.max[i] = 0;
-    }
+    memset(calHist, 0, sizeof calHist);
     calActive = true;
 }
 
 bool sensorsCalibrateEnd(int8_t& badSensor) {
     calActive = false;
     badSensor = -1;
+
+    Split split[IR_COUNT];
+    uint32_t lowN = 0, highN = 0;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
-        if (calRun.max[i] < calRun.min[i] + IR_CAL_MIN_RANGE) {
+        split[i] = splitHistogram(calHist[i]);
+        if (split[i].highRaw - split[i].lowRaw < IR_CAL_MIN_CONTRAST) {
             badSensor = i;
             return false;
         }
+        lowN += split[i].lowN;
+        highN += split[i].highN;
     }
-    sensorsSetCalibration(calRun);
+
+    // The spin keeps the sensors over the background most of the time, so
+    // the smaller group (over all sensors) is the line: low = white line.
+    bool lineIsWhite = lowN < highN;
+    SensorCal c;
+    for (uint8_t i = 0; i < IR_COUNT; i++) {
+        uint16_t lo = (uint16_t)lroundf(split[i].lowRaw), hi = (uint16_t)lroundf(split[i].highRaw);
+        c.background[i] = lineIsWhite ? hi : lo;
+        c.line[i]       = lineIsWhite ? lo : hi;
+    }
+    sensorsSetCalibration(c);
     return true;
 }
 

@@ -111,6 +111,14 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
             motorsStop();
             return pos;
         }
+        // Lost past a sharp corner: spin on the spot toward the side the line
+        // went (pos = -1 / +1) until a sensor finds it again. Line following
+        // then restarts with a fresh derivative (following stays false).
+        if (state == LineState::Lost && pos != 0.0f) {
+            float s = pos < 0.0f ? -PIVOT_SPEED : PIVOT_SPEED;
+            motorsSet(s, -s);  // line left: left wheel back, right forward
+            return pos;
+        }
     } else {
         wasLost = false;
     }

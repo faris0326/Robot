@@ -286,9 +286,24 @@ function showCal(state, text) {
   }[state];
   el.className = `save ${state === "saved" ? "saved" : state === "error" ? "error" : state === "running" ? "waiting" : ""}`;
 }
+// Sensors are sent left -> right, which is D8 .. D1 on the board.
+const sensorName = i => `D${irCount - i}`;
+const ADC_V = 3.1 / 4095;   // raw ADC count -> volts (11 dB attenuation)
 function onCal(m) {
-  if (m.ok) showCal("saved", m.saved ? "✓ Calibrated and saved" : "✓ Calibrated (not saved)");
-  else showCal("error", `Calibration failed: sensor D${m.bad + 1} never saw the line. Start over the line.`);
+  if (!m.ok) {
+    showCal("error", `Calibration failed: sensor ${sensorName(m.bad)} couldn't tell the line from the background. ` +
+                     "Start over the line, or lower the sensor array.");
+    return;
+  }
+  let text = m.saved ? "✓ Calibrated and saved" : "✓ Calibrated (not saved)";
+  if (m.bg && m.line) {
+    // The weakest sensor's gap between line and background: the margin left at this height.
+    let weak = 0;
+    m.bg.forEach((b, i) => { if (Math.abs(m.line[i] - b) < Math.abs(m.line[weak] - m.bg[weak])) weak = i; });
+    const v = Math.abs(m.line[weak] - m.bg[weak]) * ADC_V;
+    text += ` · ${m.white ? "white" : "black"} line · weakest ${sensorName(weak)} ${v.toFixed(2)} V`;
+  }
+  showCal("saved", text);
 }
 
 function onBinary(buf) {
@@ -750,7 +765,9 @@ function tick(now) {
 
     const tag = $("lineTag");
     const st = ["ok", "gap", "lost"][f.state] || "lost";
-    setText("lineTag", ["On line", "Gap", "Lost"][f.state] || "?");
+    // While lost, the position is the side the robot remembers the line went (-1 / +1).
+    const lostSide = f.pos < 0 ? " → turning left" : f.pos > 0 ? " → turning right" : "";
+    setText("lineTag", f.state === 2 ? `Lost${lostSide}` : ["On line", "Gap"][f.state] || "?");
     if (tag.dataset.st !== st) { tag.className = `tag ${st}`; tag.dataset.st = st; }
     setText("runState", f.running ? "" : "· start delay");
 
@@ -865,7 +882,8 @@ function startDemo() {
         l = s * trimL(); r = -s * trimR();
       } else {
         mode = 2;
-        onCal({ type: "cal", ok: true, bad: -1, saved: true });
+        onCal({ type: "cal", ok: true, bad: -1, saved: true, white: false,
+                 bg: Array(N).fill(500), line: Array.from({ length: N }, (_, i) => 3000 - i * 60) });
       }
     }
     // 8 analog sensors 9.5 mm apart: each sees the 18 mm line with a soft edge.

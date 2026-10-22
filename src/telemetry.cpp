@@ -161,11 +161,11 @@ void serviceCalibration() {
 
     SensorCal c = sensorsCalibration();
     char msg[384];
-    int n = snprintf(msg, sizeof msg, "{\"type\":\"cal\",\"ok\":%s,\"bad\":%d,\"saved\":%s,\"min\":[",
-                     ok ? "true" : "false", bad, saved ? "true" : "false");
-    for (uint8_t i = 0; i < IR_COUNT; i++) n += snprintf(msg + n, sizeof msg - n, "%s%u", i ? "," : "", c.min[i]);
-    n += snprintf(msg + n, sizeof msg - n, "],\"max\":[");
-    for (uint8_t i = 0; i < IR_COUNT; i++) n += snprintf(msg + n, sizeof msg - n, "%s%u", i ? "," : "", c.max[i]);
+    int n = snprintf(msg, sizeof msg, "{\"type\":\"cal\",\"ok\":%s,\"bad\":%d,\"saved\":%s,\"white\":%s,\"bg\":[",
+                     ok ? "true" : "false", bad, saved ? "true" : "false", calLineIsWhite(c) ? "true" : "false");
+    for (uint8_t i = 0; i < IR_COUNT; i++) n += snprintf(msg + n, sizeof msg - n, "%s%u", i ? "," : "", c.background[i]);
+    n += snprintf(msg + n, sizeof msg - n, "],\"line\":[");
+    for (uint8_t i = 0; i < IR_COUNT; i++) n += snprintf(msg + n, sizeof msg - n, "%s%u", i ? "," : "", c.line[i]);
     snprintf(msg + n, sizeof msg - n, "]}");
     ws.broadcastTXT(msg);
 }

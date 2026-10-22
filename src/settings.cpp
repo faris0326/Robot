@@ -63,7 +63,7 @@ namespace {
 
 constexpr char     CAL_NAMESPACE[] = "sensors";
 constexpr char     CAL_KEY[] = "cal";
-constexpr uint16_t CAL_VERSION = 1;
+constexpr uint16_t CAL_VERSION = 2;  // 2: background/line averages (1 was min/max)
 
 struct CalRecord {
     uint16_t  version;

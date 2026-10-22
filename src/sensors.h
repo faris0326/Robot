@@ -2,8 +2,10 @@
 // Line sensor array (8-channel analog QTR-8A clone). All position logic
 // lives here so the array can change without touching control or telemetry.
 //
-// Each sensor's raw ADC value is mapped through its calibration (min = the
-// background, max = the line) to a level 0..1, where 1 = fully on the line.
+// Each sensor's raw ADC value is mapped through its calibration (the typical
+// background and line readings) to a level 0..1, where 1 = fully on the line.
+// The line can read higher (black line) or lower (white line) than the
+// background; calibration finds out which.
 // The position is the level-weighted average of the sensor weights, so it
 // moves smoothly even while the line is between two sensors.
 
@@ -18,15 +20,19 @@ enum class LineState : uint8_t {
 };
 
 struct SensorCal {
-    uint16_t min[IR_COUNT];  // raw ADC over the background
-    uint16_t max[IR_COUNT];  // raw ADC over the line
+    uint16_t background[IR_COUNT];  // typical raw ADC over the background
+    uint16_t line[IR_COUNT];        // typical raw ADC over the line
 };
+
+// True when the line reads lower than the background (white line, dark floor).
+inline bool calLineIsWhite(const SensorCal& c) { return c.line[0] < c.background[0]; }
 
 void sensorsBegin();
 
 // Reads the array and returns the line position: -1 = far left, 0 = centre,
 // +1 = far right. When no sensor sees the line it returns -1 or +1 toward
-// the side the line was last seen on (0 if it was last seen dead centre).
+// the side the line was last clearly seen on: the outer sensor that last saw
+// it alone, else the last position beyond LOST_SIDE_MIN (0 if neither).
 float readPosition();
 
 // From the last read; bit i set = sensor i level above IR_ON_LINE, bit 0 = leftmost.
@@ -35,9 +41,12 @@ LineState lineState();
 void      sensorsLevels(uint8_t* out);        // IR_COUNT levels, 0..255
 void      sensorsRaw(uint16_t* out);          // IR_COUNT raw ADC values
 
-// Calibration. Begin, then every readPosition() widens each sensor's min/max
-// until End, which applies it only if every sensor saw at least
-// IR_CAL_MIN_RANGE. On failure badSensor = the first sensor that didn't.
+// Calibration. Begin, then every readPosition() adds each sensor's reading
+// to a histogram until End. End splits each histogram into two groups
+// (background and line), sets the on-line threshold halfway between them and
+// takes the smaller group as the line, which also finds the line colour. It
+// applies the result only if every sensor's groups are at least
+// IR_CAL_MIN_CONTRAST apart; on failure badSensor = the first one that wasn't.
 SensorCal sensorsCalibration();
 void      sensorsSetCalibration(const SensorCal& c);
 void      sensorsCalibrateBegin();

@@ -60,8 +60,9 @@ constexpr uint8_t IR_COUNT = 8;
 constexpr uint8_t PIN_IR[IR_COUNT] = {9, 8, 7, 6, 5, 4, 2, 1};  // D8..D1, left -> right
 constexpr uint8_t PIN_IR_LED = 11;  // the board's IR pin: HIGH = emitters on
 
-// Line colour. The race track (Cytron) is a black line on white; set true
-// for practice on a white line on a dark surface.
+// Line colour until the robot is calibrated (calibration measures it and
+// replaces this). The race track (Cytron) is a black line on white; true =
+// a white line on a dark surface.
 constexpr bool LINE_IS_WHITE = true;
 
 // Position weight per sensor, left -> right (evenly spaced). Only the ratios
@@ -69,15 +70,18 @@ constexpr bool LINE_IS_WHITE = true;
 constexpr float IR_WEIGHTS[IR_COUNT] = {-7, -5, -3, -1, 1, 3, 5, 7};
 
 // Each sensor's reading is calibrated to a level: 0 = background, 1 = line.
+// 0.5 = halfway between the background and line readings calibration measured.
 constexpr float IR_ON_LINE     = 0.5f;   // level that counts as "on the line"
 constexpr float IR_NOISE_FLOOR = 0.05f;  // levels below this are ignored in the position
 
-// Raw ADC range (12-bit) used until the robot has been calibrated.
-constexpr uint16_t IR_DEFAULT_MIN = 400;   // ~0.3 V, white
-constexpr uint16_t IR_DEFAULT_MAX = 3600;  // ~2.8 V, black
-// Calibration fails if any sensor saw less raw range than this (it never
-// crossed the line, or it's disconnected).
-constexpr uint16_t IR_CAL_MIN_RANGE = 600;
+// Raw ADC readings (12-bit) used until the robot has been calibrated,
+// measured with the array ~3 mm above the surface.
+constexpr uint16_t IR_DEFAULT_WHITE = 400;   // ~0.3 V
+constexpr uint16_t IR_DEFAULT_BLACK = 3600;  // ~2.8 V
+// Calibration fails if any sensor's typical line and background readings are
+// closer than this (it never crossed the line, it's disconnected, or the
+// array is too high to tell them apart). 250 = ~0.2 V; ADC noise is ~30.
+constexpr uint16_t IR_CAL_MIN_CONTRAST = 250;
 
 // Calibration run (phone "Calibrate" button): with the robot on the line, it
 // spins right, left, right on the spot while recording each sensor's min/max.
@@ -103,10 +107,18 @@ constexpr float KD_FILTER_MS = 10.0f;
 // All of the above (plus MOTOR_TRIM and the manual speed) can be changed
 // live from the phone; these are the values after every power-on.
 
+// Sharp (90-degree) corners: when no sensor sees the line, the robot spins on
+// the spot toward the side it went, wheels in opposite directions.
+constexpr float PIVOT_SPEED   = 0.60f;  // fraction of rated voltage
+// A position beyond this (either side) marks which way the line went, when
+// no outer sensor saw it alone.
+constexpr float LOST_SIDE_MIN = 0.20f;
+
 // No sensor sees the line for longer than this -> brake until it is seen
-// again. GAP_TIMEOUT_MS only applies to digital arrays, where the line can
-// sit between two sensors; the analog array never reports a gap.
-constexpr uint32_t LOST_TIMEOUT_MS = 500;
+// again (long enough to spin past 90 degrees). GAP_TIMEOUT_MS only applies to
+// digital arrays, where the line can sit between two sensors; the analog
+// array never reports a gap.
+constexpr uint32_t LOST_TIMEOUT_MS = 1500;
 constexpr uint32_t GAP_TIMEOUT_MS  = 2000;
 
 // ---------------------------------------------------------------------------
