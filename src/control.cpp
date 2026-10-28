@@ -6,13 +6,14 @@
 
 namespace {
 ControlGains gains;
+float        smoothPos = 0.0f;  // position after the low-pass (smoothMs)
 float        prevPos = 0.0f;
 float        deriv = 0.0f;  // filtered d(position)/dt, position units per second
 bool         primed = false;
 }  // namespace
 
 void controlBegin() {
-    gains = {KP, KD, BASE_SPEED};
+    gains = {KP, KD, BASE_SPEED, POSITION_SMOOTH_MS};
     controlReset();
 }
 
@@ -25,16 +26,23 @@ void controlReset() {
 }
 
 float controlCorrection(float position, float dt) {
+    if (!primed) {
+        smoothPos = position;
+    } else if (dt > 0.0f) {
+        float a = dt / (gains.smoothMs * 1e-3f + dt);  // first-order low-pass; 1 when off
+        smoothPos += a * (position - smoothPos);
+    }
+
     if (primed && dt > 0.0f) {
-        float raw = (position - prevPos) / dt;
+        float raw = (smoothPos - prevPos) / dt;
         float a = dt / (KD_FILTER_MS * 1e-3f + dt);  // first-order low-pass
         deriv += a * (raw - deriv);
     }
-    prevPos = position;
+    prevPos = smoothPos;
     primed = true;
 
     // Line to the left (position < 0) -> slow the left wheel.
-    return gains.kp * position + gains.kd * deriv;
+    return gains.kp * smoothPos + gains.kd * deriv;
 }
 
 void controlUpdate(float position, float dt, float& left, float& right) {

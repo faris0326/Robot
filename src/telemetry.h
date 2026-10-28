@@ -4,11 +4,13 @@
 //
 // Messages sent to the phone:
 //   text   {"type":"hello",...}   once per connection (sensor count, rated motor
-//          volts, calibration "saved"/"default", tuning)
+//          volts "motorV", voltage limit "vLimit" / max "vMax", "inaBattery"
+//          (the INA219 measures the battery, not the 5 V rail), calibration
+//          "saved"/"default", line colour "white", tuning)
 //   text   {"type":"stats",...}   once a second: CPU load per core, control loop
 //          load, heap, PSRAM, chip temperature, phone RSSI, uptime (see sysmon.h),
 //          and the battery estimate (see power.h)
-//   text   {"type":"cal","ok":..,"bad":..,"saved":..,"min":[..],"max":[..]}
+//   text   {"type":"cal","ok":..,"bad":..,"saved":..,"white":..,"bg":[..],"line":[..]}
 //          after each calibration run (bad = first sensor that failed, or -1)
 //   binary type 1 sample frame, TELEMETRY_HZ, 37 + IR_COUNT bytes, little-endian:
 //     0  u8  type = 1            1  u8  version = 2
@@ -22,7 +24,7 @@
 //    24  u16 loop max us        26  u16 period max us
 //    28  i16 left speed  (reserved: encoders)
 //    30  i16 right speed (reserved: encoders)
-//    32  u16 5 V rail mV (INA219; 0 if not found)
+//    32  u16 INA219 bus mV: 5 V rail, or the battery on PcbChassis (0 if not found)
 //    34  i16 current mA  (INA219, whole robot)
 //    36  u8  sensor count n     37  u8 x n sensor levels (0 = background, 255 = line)
 //   binary type 2 lap event, 16 bytes, little-endian:
@@ -41,13 +43,20 @@
 //                                    4 center test: turn on the spot only)
 //   type 0x11 manual drive, 5 bytes: 0 u8 type, 1 i16 throttle x10000,
 //                                    3 i16 steer x10000
-//   type 0x12 tuning, 29 bytes: 0 u8 type, then f32 each: 1 auto speed,
+//   type 0x12 tuning, 37 bytes: 0 u8 type, then f32 each: 1 auto speed,
 //                                  5 manual max, 9 kp, 13 kd, 17 motor trim,
-//                                  21 corner brake ms, 25 spin speed
-//                                  (the robot clamps every field; an older
-//                                  21-byte message keeps the last two)
+//                                  21 corner brake ms, 25 spin speed,
+//                                  29 calibrate spin speed, 33 smoothing ms
+//                                  (the robot clamps every field; a shorter
+//                                  older message keeps the fields it lacks)
 //   type 0x13 reset tuning, 1 byte: erase the saved tuning, back to config.h
 //   type 0x14 battery charged, 1 byte: battery estimate back to 100 %
+//   type 0x16 motor voltage limit (dev unlock), 5 bytes: 0 u8 type, 1 f32 volts
+//                                   at speed 1.0, clamped to rated .. MOTOR_UNLOCK_MAX_V;
+//                                   not saved; sent back as {"type":"vlimit","v":..}
+//   type 0x15 line colour, 2 bytes: 0 u8 type, 1 u8 (1 white line, 0 black);
+//                                   saved to flash, sent back as
+//                                   {"type":"line","white":..} to every phone
 //   In manual mode the phone repeats 0x11 ~30 times/s; the robot brakes if
 //   none arrive for MANUAL_TIMEOUT_MS.
 //   After 0x12/0x13 the robot sends {"type":"tuning",...} to every phone; the

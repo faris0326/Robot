@@ -5,7 +5,25 @@
 #include <stdint.h>
 
 // ---------------------------------------------------------------------------
-// Motor driver (DRV8833, powered from the +5 V rail)
+// Board
+// ---------------------------------------------------------------------------
+//   Original    the first build (schematic 2026-10-16): INA219 on the 5 V
+//               rail, IR LED enable on GPIO 11. Its DRV8833 was rewired to
+//               the 2S battery on 2026-10-23, where nothing measures it, so
+//               the motor supply is assumed to be MOTOR_SUPPLY_V.
+//   PcbChassis  the PCB-as-chassis board (schematic/pcb_chassis_sheet1.png):
+//               INA219 on the battery side (pack voltage and all current,
+//               motors included), DRV8833 fed after it, IR LED enable on
+//               GPIO 10, encoder connectors on GPIO 11..14. The motor supply
+//               is measured, so the motors get their voltage limit at any
+//               charge.
+// Everything else (sensor, motor and I2C pins) is the same on both.
+enum class Board : uint8_t { Original, PcbChassis };
+constexpr Board BOARD = Board::PcbChassis;
+constexpr bool  INA219_ON_BATTERY = BOARD == Board::PcbChassis;
+
+// ---------------------------------------------------------------------------
+// Motor driver (DRV8833, powered from the 2S battery)
 // ---------------------------------------------------------------------------
 // Right motor: IN1/IN2 -> OUT1/OUT2 -> M1_R/M2_R
 constexpr uint8_t PIN_MOTOR_R_IN1 = 18;
@@ -32,13 +50,35 @@ constexpr float MOTOR_TRIM = 0.0f;
 constexpr uint32_t MOTOR_PWM_FREQ_HZ = 20000;  // above hearing range
 constexpr uint8_t  MOTOR_PWM_BITS    = 10;     // 0..1023
 
-// Motor voltage cap. The motors are rated 3 V but the driver runs from the
-// 5 V rail, so PWM duty never exceeds 3 / 5 = 60 %. Every speed in the code
-// and on the phone is a fraction of the rated voltage: 1.0 (100 %) = 3 V.
+// Motor voltage cap. The motors are rated 3 V; the driver (DRV8833 VM) runs
+// straight from the 2S battery (the MINI560 only feeds the ESP32 and sensors).
+// PWM duty = limit / supply voltage. Every speed in the code and on the phone
+// is a fraction of the limit: 1.0 (100 %) = 3 V unless unlocked (below).
+//
+// MOTOR_SUPPLY_V is the supply assumed when it isn't measured (Original
+// board, or the INA219 not answering): a full battery, so the motors never
+// see more than the limit; as the battery runs down they get less (7.4 V:
+// 2.6 V). PcbChassis measures it instead (MOTOR_SUPPLY_* below).
 constexpr float MOTOR_RATED_V  = 3.0f;
-constexpr float MOTOR_SUPPLY_V = 5.0f;
+constexpr float MOTOR_SUPPLY_V = 8.4f;  // 2S full charge (was 5.0 from the MINI560)
 constexpr float MAX_DUTY = MOTOR_RATED_V / MOTOR_SUPPLY_V;  // PWM duty at speed 1.0
 static_assert(MAX_DUTY > 0.0f && MAX_DUTY <= 1.0f, "rated voltage must not exceed the supply");
+// Dev unlock (phone "Dev" card): the motor voltage limit can be raised up to
+// this for more speed, overdriving the 3 V motors (more heat and wear).
+// Speed 1.0 then means the unlocked voltage, so every speed scales with it.
+// It is not saved: every power-on starts at MOTOR_RATED_V.
+constexpr float MOTOR_UNLOCK_MAX_V = 5.0f;
+static_assert(MOTOR_UNLOCK_MAX_V >= MOTOR_RATED_V && MOTOR_UNLOCK_MAX_V <= MOTOR_SUPPLY_V,
+              "unlock limit must be between the rated voltage and the supply");
+// PcbChassis: the measured supply (INA219 bus voltage = the DRV8833's VM)
+// replaces MOTOR_SUPPLY_V. A rise is followed at once and a drop over
+// MOTOR_SUPPLY_FILTER_MS, so the duty errs low (slower), not high. A reading
+// outside MIN..MAX (a fault, or a 5 V rail on the Original board) falls back
+// to MOTOR_SUPPLY_V.
+constexpr float MOTOR_SUPPLY_FILTER_MS = 200.0f;
+constexpr float MOTOR_SUPPLY_MIN_V     = 5.5f;   // a 2S pack this low is flat (or it's a 5 V rail)
+constexpr float MOTOR_SUPPLY_MAX_V     = 9.0f;   // above a full 2S pack
+static_assert(MOTOR_SUPPLY_MIN_V > MOTOR_UNLOCK_MAX_V, "duty must stay below 100 % at the lowest supply");
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -59,11 +99,22 @@ constexpr uint8_t IR_COUNT = 8;
 // (GPIO 11..20) can't be read while Wi-Fi is on. The build checks this.
 // Wiring: D1=1, D2=2, D3=4, D4=5, D5=6, D6=7, D7=8, D8=9.
 constexpr uint8_t PIN_IR[IR_COUNT] = {9, 8, 7, 6, 5, 4, 2, 1};  // D8..D1, left -> right
-constexpr uint8_t PIN_IR_LED = 11;  // the board's IR pin: HIGH = emitters on
+// The array's IR pin: HIGH = emitters on (its R6 pull-up keeps them on if
+// the pin isn't driven).
+constexpr uint8_t PIN_IR_LED = BOARD == Board::PcbChassis ? 10 : 11;
 
-// Line colour. The race track (Cytron) is a black line on white (false);
-// true = a white line on a dark surface. Calibration measures the two
-// readings and uses this to know which one is the line.
+// Encoder connectors (PcbChassis only; the current N20 motors have none).
+// Not used by the firmware and never driven, so they stay plain inputs. The
+// encoders are powered from 5 V: check their outputs stay at 3.3 V first.
+constexpr uint8_t PIN_ENC_L_C1 = 13;
+constexpr uint8_t PIN_ENC_L_C2 = 14;
+constexpr uint8_t PIN_ENC_R_C1 = 12;
+constexpr uint8_t PIN_ENC_R_C2 = 11;
+
+// Line colour until one is chosen on the phone (saved after that). The race
+// track (Cytron) is a black line on white (false); true = a white line on a
+// dark surface. Calibration measures two readings per sensor; the colour
+// says which one is the line.
 constexpr bool LINE_IS_WHITE = true;
 
 // Position weight per sensor, left -> right (evenly spaced). Only the ratios
@@ -86,7 +137,7 @@ constexpr uint16_t IR_CAL_MIN_CONTRAST = 250;
 
 // Calibration run (phone "Calibrate" button): with the robot on the line, it
 // spins right, left, right on the spot while recording each sensor's min/max.
-constexpr float    CAL_SPIN_SPEED  = 0.5f;   // fraction of rated voltage
+constexpr float    CAL_SPIN_SPEED  = 1.0f;   // fraction of rated voltage (1.0 = full, 3 V); live on the phone
 constexpr uint32_t CAL_DURATION_MS = 2400;   // 1/4 right, 1/2 left, 1/4 right
 
 // ---------------------------------------------------------------------------
@@ -104,6 +155,11 @@ constexpr float KP         = 0.40f;  // speed difference per unit of position
 constexpr float KD         = 0.000f;
 // The derivative of position is low-pass filtered with this time constant.
 constexpr float KD_FILTER_MS = 10.0f;
+// The position itself is smoothed (low-pass, this time constant) before KP
+// and KD see it. Sensor (ADC) noise would otherwise reach the motors every
+// 1 ms tick and make them jitter on a straight line; KD magnifies it most.
+// 0 = off. Live on the phone ("Smoothing").
+constexpr float POSITION_SMOOTH_MS = 4.0f;
 
 // All of the above (plus MOTOR_TRIM and the manual speed) can be changed
 // live from the phone; these are the values after every power-on.
@@ -179,9 +235,13 @@ constexpr uint32_t TELEMETRY_HZ     = 40;  // frames per second sent to the phon
 constexpr uint32_t TUNING_SAVE_DELAY_MS = 2000;
 
 // ---------------------------------------------------------------------------
-// Power monitor: INA219 in series with the 5 V rail on the board. The BMS
-// and MINI560 sit on the battery pack, so the battery itself can't be
-// measured; its charge is estimated by counting the energy the robot uses.
+// Power monitor: INA219 (shunt Vin+ -> Vin-) in series with
+//   Original:   the 5 V rail. The BMS and MINI560 sit on the battery pack, so
+//               the battery itself can't be measured, and since 2026-10-23
+//               the motor current bypasses the shunt.
+//   PcbChassis: the battery, after the slide switch. Its bus voltage is the
+//               pack voltage and its current is everything, motors included.
+// The charge is estimated by counting the energy the robot uses.
 // ---------------------------------------------------------------------------
 constexpr uint8_t PIN_I2C_SDA = 41;
 constexpr uint8_t PIN_I2C_SCL = 42;
@@ -194,7 +254,10 @@ constexpr float BATTERY_USABLE    = 0.90f;       // share a real pack delivers b
 constexpr float BUCK_EFFICIENCY   = 0.88f;       // MINI560 near 5 V out
 // The MINI560 can't hold 5 V once the battery is nearly empty. Its output
 // below this for 2 s means "battery low".
-constexpr float RAIL_LOW_V        = 4.75f;
+constexpr float RAIL_LOW_V        = 4.75f;       // Original
+// PcbChassis: the pack itself below this for 2 s means "battery low"
+// (3.2 V per cell, under load).
+constexpr float BATTERY_LOW_V     = 6.4f;
 
 // Encoders: not used. The new 3 V motors (2026-10-21) are run without them;
 // GPIO 11 is now the IR LED pin.

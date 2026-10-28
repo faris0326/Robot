@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <string.h>
 
+#include <atomic>
+
 namespace {
 
 // ADC2 (GPIO 11..20) is shared with Wi-Fi and fails while it runs, and
@@ -26,6 +28,11 @@ LineState state = LineState::Lost;
 float     lastSeen = 0.0f;
 int8_t    lastSide = 0;    // -1 / +1: side the line was last clearly seen on
 int8_t    corner = 0;      // -1 / +1: a corner to that side is under the array
+
+// Line colour in use (core 1) and the one asked for from the phone (core 0).
+// readPosition() applies a change, so only core 1 ever rewrites `cal`.
+bool              lineWhite = LINE_IS_WHITE;
+std::atomic<bool> wantWhite{LINE_IS_WHITE};
 float     weightScale = 1.0f;  // maps the outermost weight to +/-1
 
 // The calibration is used on core 1 and copied for saving on core 0.
@@ -100,6 +107,11 @@ void sensorsBegin() {
 }
 
 float readPosition() {
+    if (wantWhite != lineWhite) {
+        lineWhite = wantWhite;
+        sensorsSetCalibration(sensorsCalibration());  // swaps line/background
+    }
+
     for (uint8_t i = 0; i < IR_COUNT; i++) raw[i] = analogRead(PIN_IR[i]);
 
     if (calActive) {
@@ -173,7 +185,7 @@ void sensorsSetCalibration(const SensorCal& in) {
     // Raw is high over black: a black line must read above its background.
     SensorCal c = in;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
-        if ((c.line[i] < c.background[i]) != LINE_IS_WHITE) {
+        if ((c.line[i] < c.background[i]) != lineWhite) {
             uint16_t t = c.line[i];
             c.line[i] = c.background[i];
             c.background[i] = t;
@@ -206,11 +218,14 @@ bool sensorsCalibrateEnd(int8_t& badSensor) {
     SensorCal c;
     for (uint8_t i = 0; i < IR_COUNT; i++) {
         uint16_t lo = (uint16_t)lroundf(split[i].lowRaw), hi = (uint16_t)lroundf(split[i].highRaw);
-        c.background[i] = LINE_IS_WHITE ? hi : lo;
-        c.line[i]       = LINE_IS_WHITE ? lo : hi;
+        c.background[i] = lineWhite ? hi : lo;
+        c.line[i]       = lineWhite ? lo : hi;
     }
     sensorsSetCalibration(c);
     return true;
 }
 
 void sensorsCalibrateAbort() { calActive = false; }
+
+void sensorsSetLineWhite(bool white) { wantWhite = white; }
+bool sensorsLineWhite() { return wantWhite; }

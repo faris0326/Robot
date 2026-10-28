@@ -6,7 +6,8 @@
 struct ControlGains {
     float kp;
     float kd;
-    float base;  // duty when the line is centred
+    float base;      // duty when the line is centred
+    float smoothMs;  // position low-pass time constant, 0 = off
 };
 
 void         controlBegin();  // load defaults from config.h
@@ -18,7 +19,8 @@ ControlGains controlGetGains();
 void controlReset();
 
 // PD steering correction: the speed difference added to the left wheel and
-// taken from the right (line left = negative). Updates the derivative.
+// taken from the right (line left = negative). Smooths the position first
+// (smoothMs), then updates the derivative.
 float controlCorrection(float position, float dt);
 
 // position: -1..+1 from readPosition(). dt: seconds since the last call.

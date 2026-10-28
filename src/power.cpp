@@ -5,6 +5,7 @@
 #include <nvs.h>
 
 #include "config.h"
+#include "motors.h"
 
 namespace {
 
@@ -83,8 +84,23 @@ void publish(const PowerStats& s) {
     portEXIT_CRITICAL(&mux);
 }
 
+// PcbChassis: hand the measured motor supply to the motor driver. A rise is
+// taken at once and a drop low-passed, so the duty errs low; an impossible
+// reading (or none) makes the motors assume a full battery again.
+void feedMotorSupply(float volts, float dt, float& filtered) {
+    if (!(volts >= MOTOR_SUPPLY_MIN_V && volts <= MOTOR_SUPPLY_MAX_V)) {
+        filtered = NAN;
+    } else if (isnan(filtered) || volts > filtered) {
+        filtered = volts;
+    } else {
+        filtered += dt / (MOTOR_SUPPLY_FILTER_MS * 1e-3f + dt) * (volts - filtered);
+    }
+    motorsSetSupplyVoltage(filtered);
+}
+
 void powerTask(void*) {
     bool     configured = false;
+    float    supplyV = NAN;     // filtered motor supply (PcbChassis)
     uint32_t nextTryMs = 0;
     bool     lowCandidate = false;
     uint32_t lowSinceMs = 0;
@@ -114,6 +130,7 @@ void powerTask(void*) {
         bool ok = configured && readReg(REG_SHUNT, rawShunt) && readReg(REG_BUS, rawBus);
         if (!ok) {
             configured = false;
+            if (INA219_ON_BATTERY) feedMotorSupply(NAN, dt, supplyV);
             PowerStats s = {};
             s.usedWh = (float)usedWh;
             s.usableWh = USABLE_WH;
@@ -124,11 +141,16 @@ void powerTask(void*) {
         }
 
         float vShunt = (int16_t)rawShunt * 10e-6f;
-        float railV = (rawBus >> 3) * 0.004f;   // measured after the shunt (Vin-)
+        float busV = (rawBus >> 3) * 0.004f;    // measured after the shunt (Vin-)
         float amps = vShunt / INA219_SHUNT_OHMS;
-        float supplyV = railV + vShunt;         // MINI560 output (Vin+)
-        float railW = supplyV * amps;
-        float battW = max(railW, 0.0f) / BUCK_EFFICIENCY;
+        float inV = busV + vShunt;              // before the shunt (Vin+)
+        float inW = inV * amps;
+        // Original: Vin+ is the MINI560 output, fed from the battery through
+        // the buck. PcbChassis: Vin+ is the pack itself.
+        float battW = INA219_ON_BATTERY ? max(inW, 0.0f) : max(inW, 0.0f) / BUCK_EFFICIENCY;
+
+        // PcbChassis: the DRV8833 is fed after the shunt, so its supply is busV.
+        if (INA219_ON_BATTERY) feedMotorSupply(busV, dt, supplyV);
 
         usedWh += battW * dt / 3600.0;
 
@@ -139,9 +161,10 @@ void powerTask(void*) {
             avgW += dt / (AVG_TAU_S + dt) * (battW - avgW);
         }
 
-        // Battery nearly empty: the buck output sags while it is supplying current.
-        // (On USB power with the switch off, no current flows through the shunt.)
-        if (supplyV < RAIL_LOW_V && amps > LOW_MIN_A) {
+        // Battery nearly empty: the pack (PcbChassis) or the buck output
+        // (Original) sags while it is supplying current. (On USB power with
+        // the switch off, no current flows through the shunt.)
+        if (inV < (INA219_ON_BATTERY ? BATTERY_LOW_V : RAIL_LOW_V) && amps > LOW_MIN_A) {
             if (!lowCandidate) {
                 lowCandidate = true;
                 lowSinceMs = millis();
@@ -153,9 +176,9 @@ void powerTask(void*) {
         float leftWh = USABLE_WH - (float)usedWh;
         PowerStats s;
         s.present = true;
-        s.railV = railV;
+        s.busV = busV;
         s.currentA = amps;
-        s.powerW = railW;
+        s.powerW = inW;
         s.avgPowerW = avgW;
         s.usedWh = (float)usedWh;
         s.usableWh = USABLE_WH;

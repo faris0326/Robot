@@ -10,7 +10,7 @@ namespace {
 
 constexpr char     NVS_NAMESPACE[] = "tuning";
 constexpr char     NVS_KEY[] = "t";
-constexpr uint16_t RECORD_VERSION = 2;  // bump when Tuning changes shape
+constexpr uint16_t RECORD_VERSION = 4;  // bump when Tuning changes shape
 
 struct Record {
     uint16_t version;
@@ -18,12 +18,19 @@ struct Record {
     Tuning   tuning;
 };
 
-// Version 1 had only the first five Tuning fields (no corner brake / spin).
-constexpr size_t V1_FIELDS = 5;
-struct RecordV1 {
+// Older records hold only the first Tuning fields: version 1 the first five
+// (no corner brake / spin), version 2 the first seven (no calibrate speed),
+// version 3 the first eight (no smoothing).
+constexpr size_t oldFields(uint16_t version) {
+    return version == 1 ? 5 : version == 2 ? 7 : version == 3 ? 8 : 0;
+}
+static_assert(offsetof(Tuning, cornerBrakeMs) == 5 * sizeof(float), "version 1 = first five fields");
+static_assert(offsetof(Tuning, calSpeed) == 7 * sizeof(float), "version 2 = first seven fields");
+static_assert(offsetof(Tuning, smoothMs) == 8 * sizeof(float), "version 3 = first eight fields");
+struct OldRecord {
     uint16_t version;
     uint32_t defaultsHash;
-    float    fields[V1_FIELDS];
+    float    fields[8];
 };
 
 // FNV-1a over the first `bytes` of the default values: changes whenever the
@@ -39,7 +46,8 @@ uint32_t defaultsHash(size_t bytes = sizeof(Tuning)) {
 }  // namespace
 
 Tuning settingsDefaults() {
-    return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM, CORNER_BRAKE_MS, PIVOT_SPEED};
+    return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM, CORNER_BRAKE_MS, PIVOT_SPEED, CAL_SPIN_SPEED,
+            POSITION_SMOOTH_MS};
 }
 
 bool settingsLoad(Tuning& out) {
@@ -49,24 +57,24 @@ bool settingsLoad(Tuning& out) {
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
 
     union {
-        Record   v2;
-        RecordV1 v1;
+        Record    now;
+        OldRecord old;
     } r;
     size_t len = sizeof r;
     bool read = nvs_get_blob(h, NVS_KEY, &r, &len) == ESP_OK;
     nvs_close(h);
     if (!read) return false;
 
-    if (len == sizeof r.v2 && r.v2.version == RECORD_VERSION && r.v2.defaultsHash == defaultsHash()) {
-        out = r.v2.tuning;
+    if (len == sizeof r.now && r.now.version == RECORD_VERSION && r.now.defaultsHash == defaultsHash()) {
+        out = r.now.tuning;
         return true;
     }
-    // Saved before the corner settings existed: keep the five saved fields,
-    // the new ones start from config.h.
-    static_assert(sizeof(float) * V1_FIELDS == offsetof(Tuning, cornerBrakeMs), "v1 = first five fields");
-    if (len == sizeof r.v1 && r.v1.version == 1 && r.v1.defaultsHash == defaultsHash(sizeof r.v1.fields)) {
+    // Saved by older firmware with fewer settings: keep the saved ones, the
+    // newer ones start from config.h.
+    size_t bytes = oldFields(r.old.version) * sizeof(float);
+    if (bytes && len == offsetof(OldRecord, fields) + bytes && r.old.defaultsHash == defaultsHash(bytes)) {
         out = settingsDefaults();
-        memcpy(&out, r.v1.fields, sizeof r.v1.fields);
+        memcpy(&out, r.old.fields, bytes);
         return true;
     }
     return false;
@@ -85,6 +93,7 @@ namespace {
 
 constexpr char     CAL_NAMESPACE[] = "sensors";
 constexpr char     CAL_KEY[] = "cal";
+constexpr char     LINE_KEY[] = "white";  // line colour from the phone, u8
 constexpr uint16_t CAL_VERSION = 2;  // 2: background/line averages (1 was min/max)
 
 struct CalRecord {
@@ -120,6 +129,24 @@ bool settingsSaveCal(const SensorCal& c) {
     if (!prefs.begin(CAL_NAMESPACE, false)) return false;
     CalRecord r = {CAL_VERSION, pinsHash(), c};
     bool ok = prefs.putBytes(CAL_KEY, &r, sizeof r) == sizeof r;
+    prefs.end();
+    return ok;
+}
+
+bool settingsLoadLineWhite(bool& white) {
+    nvs_handle_t h;
+    if (nvs_open(CAL_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t v;
+    bool ok = nvs_get_u8(h, LINE_KEY, &v) == ESP_OK;
+    nvs_close(h);
+    if (ok) white = v != 0;
+    return ok;
+}
+
+bool settingsSaveLineWhite(bool white) {
+    Preferences prefs;
+    if (!prefs.begin(CAL_NAMESPACE, false)) return false;
+    bool ok = prefs.putUChar(LINE_KEY, white ? 1 : 0) == 1;
     prefs.end();
     return ok;
 }

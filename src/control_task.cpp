@@ -26,8 +26,8 @@ volatile uint32_t busyUsTotal = 0;
 // Copy live tuning from the phone into the controller and motor driver.
 void applyTuning(const Tuning& t) {
     ControlGains g = controlGetGains();
-    if (g.kp != t.kp || g.kd != t.kd || g.base != t.autoSpeed) {
-        controlSetGains({t.kp, t.kd, t.autoSpeed});
+    if (g.kp != t.kp || g.kd != t.kd || g.base != t.autoSpeed || g.smoothMs != t.smoothMs) {
+        controlSetGains({t.kp, t.kd, t.autoSpeed, t.smoothMs});
     }
     if (appliedTrim != t.trim) {
         motorsSetTrim(t.trim);
@@ -74,7 +74,7 @@ uint32_t calStartMs = 0;
 
 // Calibration spin: right, left, right on the spot while the sensors record
 // their min/max (readPosition() does the recording). Then Stop.
-void calibrateStep() {
+void calibrateStep(const Tuning& tune) {
     if (!calibrating) {
         calibrating = true;
         calStartMs = millis();
@@ -84,7 +84,7 @@ void calibrateStep() {
     uint32_t t = millis() - calStartMs;
     if (t < CAL_DURATION_MS) {
         bool right = t < CAL_DURATION_MS / 4 || t >= CAL_DURATION_MS * 3 / 4;
-        float s = right ? CAL_SPIN_SPEED : -CAL_SPIN_SPEED;
+        float s = right ? tune.calSpeed : -tune.calSpeed;
         motorsSet(s, -s);
         return;
     }
@@ -121,7 +121,7 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         return pos;
     }
     if (cmd.mode == DriveMode::Calibrate) {
-        calibrateStep();
+        calibrateStep(t);
         return pos;
     }
     if (cmd.mode == DriveMode::Manual) {

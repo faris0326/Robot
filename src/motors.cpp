@@ -2,11 +2,22 @@
 
 #include <Arduino.h>
 
+#include <atomic>
+
 #include "config.h"
 
 namespace {
 
 constexpr uint32_t PWM_MAX = (1u << MOTOR_PWM_BITS) - 1;
+
+// PWM duty at speed 1.0 = the voltage limit over the supply voltage. The
+// limit comes from the phone and the supply from the power task (both core
+// 0); the control loop on core 1 only reads maxDuty.
+std::atomic<float> limitV{MOTOR_RATED_V};
+std::atomic<float> supplyV{MOTOR_SUPPLY_V};
+std::atomic<float> maxDuty{MAX_DUTY};
+
+void updateDuty() { maxDuty = min(1.0f, limitV / supplyV); }
 
 // LEDC channels (only used by the 2.x core API)
 constexpr uint8_t CH_L_IN1 = 0;
@@ -49,8 +60,8 @@ void apply(Motor& m, float speed) {
     speed = constrain(speed, -1.0f, 1.0f) * m.gain;
     m.speed = speed;
 
-    // Speed 1.0 = rated motor voltage = MAX_DUTY of the supply.
-    float d = (m.invert ? -speed : speed) * MAX_DUTY;
+    // Speed 1.0 = the motor voltage limit = maxDuty of the supply.
+    float d = (m.invert ? -speed : speed) * maxDuty.load(std::memory_order_relaxed);
     bool forward = d >= 0.0f;
     uint32_t mag = (uint32_t)(fabsf(d) * PWM_MAX + 0.5f);
 
@@ -107,6 +118,21 @@ void motorsStop() {
     brake(left);
     brake(right);
 }
+
+void motorsSetVoltageLimit(float volts) {
+    limitV = isnan(volts) ? MOTOR_RATED_V : constrain(volts, MOTOR_RATED_V, MOTOR_UNLOCK_MAX_V);
+    updateDuty();
+}
+
+float motorsVoltageLimit() { return limitV; }
+
+void motorsSetSupplyVoltage(float volts) {
+    bool plausible = volts >= MOTOR_SUPPLY_MIN_V && volts <= MOTOR_SUPPLY_MAX_V;  // false for NaN
+    supplyV = plausible ? volts : MOTOR_SUPPLY_V;
+    updateDuty();
+}
+
+float motorsSupplyVoltage() { return supplyV; }
 
 float motorsLeftDuty()  { return left.speed; }
 float motorsRightDuty() { return right.speed; }

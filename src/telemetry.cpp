@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "control.h"
+#include "motors.h"
 #include "settings.h"
 #include "shared.h"
 #include "power.h"
@@ -29,6 +30,8 @@ constexpr uint8_t  CMD_DRIVE = 0x11;
 constexpr uint8_t  CMD_TUNING = 0x12;
 constexpr uint8_t  CMD_TUNING_RESET = 0x13;
 constexpr uint8_t  CMD_BATTERY_CHARGED = 0x14;
+constexpr uint8_t  CMD_LINE_COLOUR = 0x15;
+constexpr uint8_t  CMD_VOLT_LIMIT = 0x16;
 constexpr uint8_t  FRAME_VERSION = 2;  // sample frame; v2 added the sensor levels
 constexpr uint8_t  LAP_VERSION = 1;
 constexpr size_t   SAMPLE_FRAME_SIZE = 37 + IR_COUNT;
@@ -53,6 +56,7 @@ bool      onFlash = false;    // false: nothing saved, running on config.h value
 // Sensor calibration
 const char* calStatus = "default";  // "saved" or "default"
 uint32_t    calSeenSeq = 0;
+bool        lineSavePending = false;  // line colour changed, not in flash yet
 
 void put8(uint8_t* p, uint8_t v) { p[0] = v; }
 void put16(uint8_t* p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
@@ -79,7 +83,7 @@ size_t encodeSample(const TelemetrySample& s, const PowerStats& pw, uint8_t* f) 
     put16(f + 26, s.periodMaxUs);
     // 28..31 reserved for encoder speed, left as zero
     if (pw.present) {
-        put16(f + 32, (uint16_t)lroundf(constrain(pw.railV, 0.0f, 65.0f) * 1000.0f));
+        put16(f + 32, (uint16_t)lroundf(constrain(pw.busV, 0.0f, 65.0f) * 1000.0f));
         put16(f + 34, (int16_t)lroundf(constrain(pw.currentA, -32.0f, 32.0f) * 1000.0f));
     }
     put8(f + 36, IR_COUNT);
@@ -130,20 +134,23 @@ void formatTuning(char* out, size_t n) {
     Tuning t = sharedTuning();
     snprintf(out, n,
              "\"autoSpeed\":%.3f,\"manualMax\":%.3f,\"kp\":%.3f,\"kd\":%.4f,\"trim\":%.3f,"
-             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"save\":\"%s\"",
-             t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, saveStatus());
+             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"save\":\"%s\"",
+             t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, t.calSpeed,
+             t.smoothMs, saveStatus());
 }
 
 void sendHello(uint8_t client) {
     char tune[200];
     formatTuning(tune, sizeof tune);
-    char msg[384];
+    char msg[448];
     snprintf(msg, sizeof msg,
              "{\"type\":\"hello\",\"frame\":%u,\"ir\":%u,\"hz\":%lu,\"ctrlUs\":%lu,"
-             "\"motorV\":%.2f,\"laps\":%s,\"cal\":\"%s\",%s}",
+             "\"motorV\":%.2f,\"vLimit\":%.2f,\"vMax\":%.2f,\"inaBattery\":%s,\"laps\":%s,"
+             "\"cal\":\"%s\",\"white\":%s,%s}",
              FRAME_VERSION, IR_COUNT, (unsigned long)TELEMETRY_HZ,
-             (unsigned long)CONTROL_PERIOD_US, MOTOR_RATED_V,
-             LAP_TIMING_ENABLED ? "true" : "false", calStatus, tune);
+             (unsigned long)CONTROL_PERIOD_US, MOTOR_RATED_V, motorsVoltageLimit(), MOTOR_UNLOCK_MAX_V,
+             INA219_ON_BATTERY ? "true" : "false", LAP_TIMING_ENABLED ? "true" : "false", calStatus,
+             sensorsLineWhite() ? "true" : "false", tune);
     ws.sendTXT(client, msg);
 }
 
@@ -214,11 +221,13 @@ void onCommand(const uint8_t* p, size_t len) {
     } else if (len >= 21 && p[0] == CMD_TUNING) {
         Tuning t = sharedTuning();
         t = {getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17),
-             t.cornerBrakeMs, t.pivotSpeed};
+             t.cornerBrakeMs, t.pivotSpeed, t.calSpeed, t.smoothMs};
         if (len >= 29) {
             t.cornerBrakeMs = getF32(p + 21);
             t.pivotSpeed = getF32(p + 25);
         }
+        if (len >= 33) t.calSpeed = getF32(p + 29);
+        if (len >= 37) t.smoothMs = getF32(p + 33);
         sharedSetTuning(t);
         saveState = SaveState::Pending;
         tuningChangedMs = millis();
@@ -231,6 +240,19 @@ void onCommand(const uint8_t* p, size_t len) {
         broadcastTuning();
     } else if (len >= 1 && p[0] == CMD_BATTERY_CHARGED) {
         powerBatteryCharged();
+    } else if (len >= 2 && p[0] == CMD_LINE_COLOUR) {
+        sensorsSetLineWhite(p[1] != 0);
+        lineSavePending = true;
+        char msg[48];
+        snprintf(msg, sizeof msg, "{\"type\":\"line\",\"white\":%s}", p[1] ? "true" : "false");
+        ws.broadcastTXT(msg);
+    } else if (len >= 5 && p[0] == CMD_VOLT_LIMIT) {
+        motorsSetVoltageLimit(getF32(p + 1));
+        float v = motorsVoltageLimit();
+        Serial.printf("Motor voltage limit: %.1f V%s\n", v, v > MOTOR_RATED_V + 0.01f ? " (UNLOCKED, overdrive)" : "");
+        char msg[48];
+        snprintf(msg, sizeof msg, "{\"type\":\"vlimit\",\"v\":%.2f}", v);
+        ws.broadcastTXT(msg);
     }
 }
 
@@ -285,7 +307,11 @@ void netTask(void*) {
     }
     WiFi.setSleep(false);
 
-    http.on("/", [] { http.send_P(200, "text/html", INDEX_HTML); });
+    // no-store: phones would otherwise keep showing an old page after an upload.
+    http.on("/", [] {
+        http.sendHeader("Cache-Control", "no-store");
+        http.send_P(200, "text/html", INDEX_HTML);
+    });
     http.onNotFound([] { http.send(404, "text/plain", "not found"); });
     http.begin();
 
@@ -314,6 +340,10 @@ void netTask(void*) {
         forwardLapEvents();
         serviceSave();
         serviceCalibration();
+        if (lineSavePending && !autoDriving()) {
+            settingsSaveLineWhite(sensorsLineWhite());
+            lineSavePending = false;
+        }
         powerService(!autoDriving());
 
         if ((int32_t)(millis() - nextStatsMs) >= 0) {

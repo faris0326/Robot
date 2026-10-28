@@ -28,6 +28,8 @@ void setup() {
     bool calSaved = settingsLoadCal(cal);
     if (calSaved) sensorsSetCalibration(cal);
     Serial.printf("\nSensor calibration: %s\n", calSaved ? "from flash" : "defaults (not calibrated yet)");
+    bool white;
+    if (settingsLoadLineWhite(white)) sensorsSetLineWhite(white);
 
 #if defined(MOTOR_TEST)
     motorTest();
@@ -48,7 +50,12 @@ void setup() {
     Serial.printf("\nLine follower. Tuning from %s: speed=%.2f KP=%.2f KD=%.3f trim=%.2f. "
                   "%s line. Stopped: choose Auto on the phone\n",
                   saved ? "flash" : "config.h", t.autoSpeed, t.kp, t.kd, t.trim,
-                  LINE_IS_WHITE ? "White" : "Black");
+                  sensorsLineWhite() ? "White" : "Black");
+    Serial.printf("Board: %s. Motor supply %s; IR LED on GPIO %u\n",
+                  BOARD == Board::PcbChassis ? "PCB chassis" : "original",
+                  INA219_ON_BATTERY ? "measured by the INA219 (full 8.4 V assumed until read)"
+                                    : "assumed 8.4 V (not measured)",
+                  PIN_IR_LED);
     controlTaskStart();  // core 1
     telemetryStart();    // core 0
 #endif

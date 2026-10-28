@@ -27,6 +27,8 @@ struct Tuning {
     float trim;       // motor balance, > 0 slows the right motor (MOTOR_TRIM)
     float cornerBrakeMs;  // reverse both wheels this long per corner (CORNER_BRAKE_MS)
     float pivotSpeed;     // spin speed when the line is lost        (PIVOT_SPEED)
+    float calSpeed;       // calibration spin speed                  (CAL_SPIN_SPEED)
+    float smoothMs;       // position smoothing, 0 = off             (POSITION_SMOOTH_MS)
 };
 
 struct TelemetrySample {

@@ -16,7 +16,11 @@ bool   settingsLoad(Tuning& out);         // false if nothing valid is saved
 bool   settingsSave(const Tuning& t);
 void   settingsErase();
 
-// Sensor calibration (min/max per sensor). Ignored if the sensor pins or
-// count in config.h changed since it was saved.
+// Sensor calibration (background/line reading per sensor). Ignored if the
+// sensor pins or count in config.h changed since it was saved.
 bool settingsLoadCal(SensorCal& out);
 bool settingsSaveCal(const SensorCal& c);
+
+// Line colour chosen on the phone (true = white line). False if never saved.
+bool settingsLoadLineWhite(bool& white);
+bool settingsSaveLineWhite(bool white);

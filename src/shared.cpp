@@ -76,6 +76,8 @@ void sharedSetTuning(const Tuning& in) {
     t.trim = isnan(in.trim) ? 0.0f : constrain(in.trim, -0.9f, 0.9f);
     t.cornerBrakeMs = safe(in.cornerBrakeMs, 0.0f, 300.0f);
     t.pivotSpeed = safe(in.pivotSpeed, 0.1f, 1.0f);
+    t.calSpeed = safe(in.calSpeed, 0.1f, 1.0f);
+    t.smoothMs = safe(in.smoothMs, 0.0f, 30.0f);
     portENTER_CRITICAL(&cmdMux);
     tuning = t;
     portEXIT_CRITICAL(&cmdMux);
