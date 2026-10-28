@@ -43,6 +43,14 @@ History, old 5-channel digital array (sensortest, twice): O1 was the leftmost se
 
 Line colour is set by `LINE_IS_WHITE` (currently **`true` = white line on a dark surface**, user's choice 2026-10-15). Set `false` for a black line such as the Cytron race track. Sensor bits always mean "on the line", whatever the colour.
 
+### Next hardware: PCB as chassis (in development, schematic final 2026-10-24)
+Schematic: `schematic/pcb_chassis_sheet1.png`. The PCB doubles as the chassis to save weight for high-rpm, low-torque motors. Plan: build it on a breadboard first, design the PCB once it works. **The firmware has not been updated for it yet** (user's choice: wait until the breadboard is ready). Differences from the current build:
+- **DRV8833 VCC on the battery side** (`DRIVER` net = MINI560 IN+, after the INA219), on purpose: the driver handles it, and PWM is limited per motor's rated voltage. With the current `MOTOR_SUPPLY_V = 5` the 3 V motors would get ~4.4–5 V, so the firmware must base `MAX_DUTY` on the measured battery voltage before driving motors on this board.
+- **INA219 between SW1 (MST-12D18G4 slide switch) and the battery-side node**, so it measures pack voltage and total current, motors included. `power.cpp` needs updating: no `BUCK_EFFICIENCY` division, battery-low threshold ~6.4 V instead of `RAIL_LOW_V` 4.75 V, % can use voltage.
+- **IR LED enable on GPIO 10** (`PIN_IR_LED` is still 11).
+- **Encoder connectors kept** (C2-R / C1-R / C1-L / C2-L on GPIO 11 / 12 / 13 / 14, encoder VCC +5 V) so the old encoder motors can be swapped back in. Check that encoder outputs don't reach 5 V before using them.
+- DRV8833 `ULT` (nFAULT) left unconnected (user decision).
+
 ## Constraints and decisions
 - **Analog sensor reading** (since 2026-10-21, with the QTR-8A clone). Digital reading was used first.
 - **No PID at first.** Start with simple proportional control, then add D, then I only if needed.
