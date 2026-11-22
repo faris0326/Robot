@@ -35,6 +35,19 @@ CASTER_IN_FRONT = True builds the other version: the caster ahead of the IR arra
 instead of behind it, so the caster (not the IR eyes) meets the foot of a steep ramp.
 Its frame exports as frame_front_caster.stl; the straps are the same part.
 
+LAYOUT = "balanced" (set it here, or define LAYOUT before exec'ing this file) builds a
+variant with more weight on the drive wheels: battery centred over the axle in a low bay
+on the board (parts under it no taller than BATT_SEAT 8 mm; the ESP32 and other tall
+parts go ahead of it), board 20 mm further back, caster ahead of the IR array, cockpit,
+fin and rear wing moved back. Every export ends in "_balanced". balance() estimates the
+centre of mass and the caster load; tail_scrape() the nose-up tilt before the tail drags.
+
+MOTOR = "encoder" (same way, works with either LAYOUT) is for N20s with the Hall encoder
+board on the back. Its tab would hit the perfboard pointing up and the track pointing
+down, so these motors lie a quarter turn over: round side up, encoder tab pointing back
+under the frame at axle height. Everything above the motors sits 1 mm higher, so all
+parts are exported again with "_encoder" in the name.
+
 The earlier tub, deck, wing, sliding boom and 2.5:1 gear drive are kept in
 archive/gear_drive/.
 
@@ -63,6 +76,15 @@ import adsk.fusion
 
 MM = 0.1
 
+# "current": the layout as printed (all values below). "balanced": more weight on the
+# drive wheels, lower centre of mass (see the LAYOUT block after the constants); its
+# exports all end in "_balanced". A wrapper script can set LAYOUT before running this one.
+LAYOUT = globals().get("LAYOUT", "current")
+# "plain": N20s without encoders. "encoder": N20s with the Hall encoder board on the back
+# (see the MOTOR block after the constants); adds "_encoder" to the exports. Works with
+# either LAYOUT.
+MOTOR = globals().get("MOTOR", "plain")
+
 # --- Wheels and N20 motors: the original wheels press straight onto the shafts ---
 WHEEL_D = 33.3
 WHEEL_W = 6.2
@@ -80,6 +102,14 @@ STRAP_T = 1.6
 STRAP_TAB_H = 3.0        # tabs bear on the frame underside: nut pocket + web
 STRAP_SCREW_X = 11.6     # either side of the motor axis
 STRAP_SQUEEZE = 0.1      # strap is this much shorter than the motor, so it clamps
+# Encoder N20 (MOTOR = "encoder"), from "N20 Mini Micro Metall Gear Motor DC 3-6-12V v1.step":
+# a Hall board on the back of the can, magnet disc behind it, 6-pin connector on the back
+# of the board's tab. The tab stands up past the motor's top flat. MEASURE the real ones.
+ENC_L = 5.7              # can end to the back of the connector, along the motor axis
+ENC_TAB = 8.5            # tab and connector stand this far past the flat they sit over
+ENC_W = 12.0             # tab width (across the round sides)
+ENC_TAB_X = -1           # encoder motors lie on their round side, tab pointing back (-1) or forward (+1)
+ENC_MASS = 2.0           # g per motor over the plain N20 (balance estimate only)
 
 # --- Perfboard and electronics ----------------------------------------------
 BOARD_L = 120.0          # along X
@@ -94,6 +124,8 @@ BATT_L = 56.0            # strapped on top of the board's parts (reference only)
 BATT_W = 30.0
 BATT_H = 20.0
 BATT_X = 26.0            # centre, ahead of the axle
+BATT_SEAT = TALLEST      # battery underside above the board top (it sits on the tallest parts)
+BATT_MASS = 95.0         # g, 2S 18650 pack with BMS and buck: WEIGH IT (balance estimate only)
 
 # --- Frame: one flat skeleton plate --------------------------------------------
 FRAME_T = 2.0
@@ -156,9 +188,35 @@ MIN_THREAD = 3.0
 THREAD_SPARE = 0.6       # screw or stud left past a nut, for print tolerance
 SPACER_D = 5.5
 
+STEEPEST_RAMP = 20.0     # deg, the steepest ramp the robot must take (the N20s stalled on 20)
+PLA_DENSITY = 1.24       # g/cm3, printed parts in the balance estimate
+
+# --- LAYOUT "balanced": weight onto the drive wheels, centre of mass low -----------
+# Battery centred over the axle in a bay on the board whose parts stay under BATT_SEAT
+# (the ESP32 and other tall parts go ahead of it), board 20 mm further back (the
+# largest shift whose tail scrape angle stays STEEPEST_RAMP + 5 deg), caster ahead of
+# the IR array for the longest wheelbase. Cockpit, fin and rear wing move back with the
+# battery (the HYPER_* overrides after the body constants).
+if LAYOUT == "balanced":
+    BOARD_SHIFT = 20.0
+    BOARD_HOLE_REAR_X -= BOARD_SHIFT     # -41.75
+    BATT_X = 0.0                         # -5..+5 to trim the caster load
+    BATT_SEAT = 8.0                      # bay parts no taller than this (flat modules, wires)
+    CASTER_IN_FRONT = True
+elif LAYOUT != "current":
+    raise ValueError("LAYOUT must be 'current' or 'balanced'")
+# --- MOTOR "encoder": tab up would hit the perfboard, tab down the track. So the motors
+# are turned a quarter turn about their shafts: round side up against the frame (12 mm
+# tall instead of 10), flats front and back, encoder tab pointing back under the frame
+# at axle height. The frame and everything on it sit 1 mm higher; the lips and straps
+# fit the motor turned. The IR eyes stay at SENSOR_FACE_Z.
+if MOTOR not in ("plain", "encoder"):
+    raise ValueError("MOTOR must be 'plain' or 'encoder'")
+MOTOR_X, MOTOR_Z = (MOTOR_H, MOTOR_W) if MOTOR == "encoder" else (MOTOR_W, MOTOR_H)  # along X, tall
+
 # --- Derived ----------------------------------------------------------------
 AXLE_Z = WHEEL_D / 2
-Z_FB = AXLE_Z + MOTOR_H / 2      # frame underside = motor top
+Z_FB = AXLE_Z + MOTOR_Z / 2      # frame underside = motor top
 Z_FT = Z_FB + FRAME_T
 Z_BB = Z_FT + BOARD_STANDOFF     # board underside
 Z_BT = Z_BB + BOARD_T
@@ -191,7 +249,15 @@ SENSOR_BAR_X = (SENSOR_HOLE_X - SENSOR_PAD_W / 2 - 2.0 - SENSOR_BAR_L,
 # the caster plate clears the IR PCB's front edge (so any ball housing up to the plate's
 # length fits) and the caster meets the ramp first.
 CASTER_X = SENSOR_FRONT_X + 1.0 + CASTER_PLATE_L / 2 if CASTER_IN_FRONT else CASTER_X_BEHIND
-VARIANT = "_front_caster" if CASTER_IN_FRONT else ""
+VARIANT = "_front_caster" if CASTER_IN_FRONT else ""   # frame file of the current layout
+SUFFIX = ("_balanced" if LAYOUT == "balanced" else "") + ("_encoder" if MOTOR == "encoder" else "")
+ENC_FRONT = Y_GEARBOX - GEARBOX_L - CAN_L  # |Y| of the can end, where the encoder board starts
+ENC_REAR = ENC_FRONT - ENC_L               # |Y| of the connector's back
+# encoder board along X (from the far flat to the tab end) and its Z range
+ENC_X = tuple(sorted((-ENC_TAB_X * MOTOR_X / 2, ENC_TAB_X * (MOTOR_X / 2 + ENC_TAB))))
+ENC_Z = (AXLE_Z - ENC_W / 2, AXLE_Z + ENC_W / 2)
+Z_BATT = Z_BT + BATT_SEAT        # battery underside
+BAY = (BATT_X - BATT_L / 2 - 2.0, BATT_X + BATT_L / 2 + 2.0, BATT_W / 2 + 2.0)  # x0, x1, |y| kept low
 Z_BODY = Z_FT + BODY_GAP         # the body's open bottom edge, flat on the print bed
 Z_POST_TOP = Z_BT + POST_L
 BODY_HW = WHEEL_Y - WHEEL_W / 2 - 1.5   # half width between the wheels
@@ -499,9 +565,9 @@ def build_frame(root):
 
     # Under the plate: lips the gearbox faces rest against, pads that bring the caster
     # plate and the IR standoffs to their heights.
-    hw = MOTOR_W / 2 + MOTOR_FIT + LIP_T
+    hw = MOTOR_X / 2 + MOTOR_FIT + LIP_T
     for sy in (-1, 1):
-        box(comp, -hw, sy * Y_GEARBOX, Z_FB - MOTOR_H, hw, sy * HALF_W, Z_FB, JOIN, "lip")
+        box(comp, -hw, sy * Y_GEARBOX, Z_FB - MOTOR_Z, hw, sy * HALF_W, Z_FB, JOIN, "lip")
     rounded_box(comp, CASTER_X - CASTER_BAR_L / 2, -CASTER_BAR_HW, Z_FB - CASTER_PAD,
                 CASTER_X + CASTER_BAR_L / 2, CASTER_BAR_HW, Z_FB, FRAME_R, JOIN, "caster pad")
     # The arm carries the board's front corners onto the caster: same depth as the
@@ -523,7 +589,7 @@ def build_frame(root):
         ys = sy * (HALF_W - LIP_T / 2)
         sk = side_sketch(comp, "y", ys, "shaft slot")
         sk.sketchCurves.sketchLines.addTwoPointRectangle(
-            sk.modelToSketchSpace(P(-SHAFT_SLOT_W / 2, ys, Z_FB - MOTOR_H - 1.0)),
+            sk.modelToSketchSpace(P(-SHAFT_SLOT_W / 2, ys, Z_FB - MOTOR_Z - 1.0)),
             sk.modelToSketchSpace(P(SHAFT_SLOT_W / 2, ys, AXLE_Z)))
         sk.sketchCurves.sketchCircles.addByCenterRadius(sk.modelToSketchSpace(P(0.0, ys, AXLE_Z)),
                                                         SHAFT_SLOT_W / 2 * MM)
@@ -556,9 +622,9 @@ def build_straps(root):
     screws come down through the frame. Same part both sides: the second copy is the
     first moved across."""
     comp = new_component(root, "Motor strap")
-    hw = MOTOR_W / 2 + MOTOR_FIT
+    hw = MOTOR_X / 2 + MOTOR_FIT
     zt = Z_FB - STRAP_TAB_H                     # tab underside
-    zi = Z_FB - MOTOR_H + STRAP_SQUEEZE         # strap floor, under the motor
+    zi = Z_FB - MOTOR_Z + STRAP_SQUEEZE         # strap floor, under the motor
     zo = zi - STRAP_T
     xl, xt = hw + STRAP_T, STRAP_TAB_X
     sk = side_polygon(comp, "y", STRAP_Y,
@@ -596,7 +662,7 @@ def build_body(root):
 
     xb0, xb1 = BATT_X - BATT_L / 2, BATT_X + BATT_L / 2
     w = BATT_W / 2 + BATT_GAP + BODY_WALL + 0.2
-    zt = Z_BT + TALLEST + BATT_H + BATT_GAP + BODY_WALL
+    zt = Z_BATT + BATT_H + BATT_GAP + BODY_WALL
     bubble = prism(comp, [(xb0 - 13, -w + 4), (xb0 - 6, -w), (xb1 + 2, -w), (xb1 + 26, -10.0),
                           (xb1 + 26, 10.0), (xb1 + 2, w), (xb0 - 6, w), (xb0 - 13, w - 4)],
                    zb, top, "bubble")
@@ -778,7 +844,7 @@ def build_body_split(root):
     # plugs into the opening.
     can = new_component(root, "Canopy")
     xb0, xb1 = BATT_X - BATT_L / 2, BATT_X + BATT_L / 2
-    zt = Z_BT + TALLEST + BATT_H + BATT_GAP + BODY_WALL
+    zt = Z_BATT + BATT_H + BATT_GAP + BODY_WALL
     # The slopes reach the deck 1.5 mm inside the outline's ends, so the bubble ends in
     # clean edges on the deck (no knife edges for the fillets).
     bubble = prism(can, canopy_outline(), BODY_ROOF, top, "bubble")
@@ -876,6 +942,30 @@ SIDE_WINDOW = ((4.0, 66.0), (16.0, 73.5), (46.0, 73.5), (56.0, 68.0), (50.0, 63.
 SIDE_WINDOW_Y = (8.0, 30.0)
 WINDSCREEN = ((62.0, 15.0), (90.0, 9.0), (90.0, -9.0), (62.0, -15.0))  # (x, y)
 WINDSCREEN_Z = (59.5, 90.0)
+# Shark fin from the cockpit up to the rear wing, (x, z) on the centre line
+HYPER_FIN = ((-6.0, 60.0), (-4.0, 75.5), (-16.0, HYPER_WING_Z - 0.1), (-31.0, HYPER_WING_Z - 0.1),
+             (-31.0, 54.0), (-6.0, 54.0))
+
+if LAYOUT == "balanced":
+    # Battery 26 mm back (X 26 -> 0): the cockpit, its windows, the fin and the rear wing
+    # move back with it. The tail section follows the board back; the haunches stay over
+    # the wheels. Heights unchanged (the look stays; the battery just sits lower inside).
+    CP = -26.0
+    TAIL_X = -51.0                       # tail scrape stays above STEEPEST_RAMP + 5
+    HYPER_BODY = ((TAIL_X,) + HYPER_BODY[0][1:],) + HYPER_BODY[1:]
+    HYPER_CANOPY = tuple((x + CP, w, t) for x, w, t in HYPER_CANOPY)
+    SIDE_WINDOW = tuple((x + CP, z) for x, z in SIDE_WINDOW)
+    WINDSCREEN = tuple((x + CP, y) for x, y in WINDSCREEN)
+    WING_X = -44.0                       # struts on the tail, behind the cockpit
+    HYPER_FIN = ((-6.0 + CP, 60.0), (-4.0 + CP, 75.5), (-16.0 + CP, HYPER_WING_Z - 0.1),
+                 (TAIL_X, HYPER_WING_Z - 0.1), (TAIL_X, 54.0), (-6.0 + CP, 54.0))
+if MOTOR == "encoder":
+    # The board and battery sit higher by the motors' extra height: so do the cockpit and
+    # its windows (the battery would touch the cockpit roof). Fin and rear wing stay.
+    DZ = (MOTOR_Z - MOTOR_H) / 2
+    HYPER_CANOPY = tuple((x, w, t + DZ) for x, w, t in HYPER_CANOPY)
+    SIDE_WINDOW = tuple((x, z + DZ) for x, z in SIDE_WINDOW)
+    WINDSCREEN_Z = tuple(z + DZ for z in WINDSCREEN_Z)
 
 def hyper_section(w, yf, hf, hc, zb):
     """Right half of a section, sill to centre line, as (y, z) points for a spline."""
@@ -982,8 +1072,7 @@ def build_body_hypercar(root):
     zc = HYPER_CANOPY_BASE
     cockpit = loft(comp, [section_profile(comp, x, hyper_section(w, 0.55 * w, t, t, zc), "cockpit")
                           for x, w, t in HYPER_CANOPY])
-    sk = side_polygon(comp, "y", 0.0, [(-6.0, 60.0), (-4.0, 75.5), (-16.0, HYPER_WING_Z - 0.1),
-                                       (-31.0, HYPER_WING_Z - 0.1), (-31.0, 54.0), (-6.0, 54.0)], "fin")
+    sk = side_polygon(comp, "y", 0.0, list(HYPER_FIN), "fin")
     fin = extrude_symmetric(comp, profile(sk), 1.2, NEW).bodies.item(0)
     join(comp, main, [cockpit, fin])
     for sy in (-1, 1):
@@ -1060,13 +1149,20 @@ def build_motor_refs(root):
     for sy in (-1, 1):
         yf = sy * Y_GEARBOX               # gearbox face
         yc = yf - sy * GEARBOX_L          # gearbox / can joint
-        box(comp, -MOTOR_W / 2, yc, za - MOTOR_H / 2, MOTOR_W / 2, yf, za + MOTOR_H / 2, NEW,
+        box(comp, -MOTOR_X / 2, yc, za - MOTOR_Z / 2, MOTOR_X / 2, yf, za + MOTOR_Z / 2, NEW,
             "gearbox")
         side_cylinder(comp, yc - sy * CAN_L / 2, CAN_L, 0.0, za, MOTOR_W, "can")
         side_cylinder(comp, yf + sy * SHAFT_OUT / 2, SHAFT_OUT, 0.0, za, 3.0, "shaft")
-    # The can has flats top and bottom.
-    for z0, z1 in ((za - MOTOR_W, za - MOTOR_H / 2), (za + MOTOR_H / 2, za + MOTOR_W)):
+    # The can has flats top and bottom (front and back on the encoder motors).
+    for z0, z1 in ((za - MOTOR_W, za - MOTOR_Z / 2), (za + MOTOR_Z / 2, za + MOTOR_W)):
         box(comp, -MOTOR_W, -HALF_W, z0, MOTOR_W, HALF_W, z1, CUT, "can flats")
+    if MOTOR_X < MOTOR_W:
+        for x0, x1 in ((-MOTOR_W, -MOTOR_X / 2), (MOTOR_X / 2, MOTOR_W)):
+            box(comp, x0, -HALF_W, za - MOTOR_W, x1, HALF_W, za + MOTOR_W, CUT, "can flats")
+    if MOTOR == "encoder":
+        for sy in (-1, 1):
+            ya, yb = sorted((sy * ENC_REAR, sy * ENC_FRONT))
+            box(comp, ENC_X[0], ya, ENC_Z[0], ENC_X[1], yb, ENC_Z[1], NEW, "encoder")
 
 
 def reference(comp):
@@ -1083,6 +1179,9 @@ def build_references(root):
     box(comp, BOARD_X0, -BOARD_W / 2, Z_BB, BOARD_X1, BOARD_W / 2, Z_BT, NEW, "perfboard")
     box(comp, BOARD_X0 + 2, -BOARD_W / 2 + 2, Z_BT, BOARD_X1 - 2, BOARD_W / 2 - 2,
         Z_BT + TALLEST, NEW, "tallest parts envelope")
+    if BATT_SEAT < TALLEST:  # battery bay: parts under the battery stay below BATT_SEAT
+        box(comp, BAY[0], -BAY[2], Z_BT + BATT_SEAT, BAY[1], BAY[2], Z_BT + TALLEST + 1.0, CUT,
+            "battery bay")
     reference(comp)
 
     comp = new_component(root, "Brass spacers (ref)")
@@ -1097,7 +1196,7 @@ def build_references(root):
         LOOKAHEAD + 1.5, SENSOR_L / 2 - 3, SENSOR_PCB_TOP - SENSOR_T, NEW, "eyes")
 
     comp = new_component(root, "Battery (ref)")
-    z = Z_BT + TALLEST
+    z = Z_BATT
     box(comp, BATT_X - BATT_L / 2, -BATT_W / 2, z, BATT_X + BATT_L / 2, BATT_W / 2, z + BATT_H,
         NEW, "battery")
     reference(comp)
@@ -1188,6 +1287,47 @@ def check():
             raise ValueError("caster runs into the IR array")
     elif SENSOR_REAR_X < CASTER_X + CASTER_PLATE_L / 2:
         raise ValueError("IR array runs into the caster")
+    if LAYOUT == "balanced":
+        if tail_scrape() < STEEPEST_RAMP + 5.0:
+            raise ValueError("tail scrapes: move the board forward")
+        if BATT_SEAT > 10.0 or not -5.0 <= BATT_X <= 5.0:
+            raise ValueError("battery not low and over the axle")
+
+
+def tail_scrape():
+    """Nose-up tilt (deg) about the wheels' contact point before the tail touches flat
+    ground: frame rear edge, body tail sill."""
+    pts = [(-(BOARD_HOLE_REAR_X - PAD_D / 2), Z_FB)]
+    if BODY_STYLE == "hypercar":
+        pts.append((-HYPER_BODY[0][0], Z_BODY))
+    return round(min(math.degrees(math.atan2(z, x)) for x, z in pts), 1)
+
+
+def balance(root=None):
+    """Centre of mass and caster load. Printed parts from the CAD (PLA_DENSITY, solid),
+    the rest as point masses (g, x, z): replace them with real weights when known."""
+    parts = [("motors + wheels", 28.0 + (2 * ENC_MASS if MOTOR == "encoder" else 0.0), 0.0, AXLE_Z),
+             ("battery", BATT_MASS, BATT_X, Z_BATT + BATT_H / 2),
+             ("perfboard + electronics", 35.0, (BOARD_X0 + BOARD_X1) / 2, Z_BT + 4.0),
+             ("IR array + standoffs", 8.0, LOOKAHEAD, SENSOR_PCB_TOP),
+             ("ball caster", 8.0, CASTER_X, CASTER_H / 2)]
+    if root:
+        for occ in root.allOccurrences:
+            name = occ.component.name
+            if name in PRINTED and occ.component.bRepBodies.count:
+                pp = occ.physicalProperties
+                c = pp.centerOfMass
+                parts.append((name, pp.volume * PLA_DENSITY, c.x / MM, c.z / MM))
+    m = sum(p[1] for p in parts)
+    x = sum(p[1] * p[2] for p in parts) / m
+    z = sum(p[1] * p[3] for p in parts) / m
+    caster = x / CASTER_X
+    brake = 0.8 * z / CASTER_X           # extra share onto the caster braking at 0.8 g
+    r = lambda v: round(v, 1)
+    return {"mass_g": r(m), "com_x_z": [r(x), r(z)], "caster_static_pct": r(100 * caster),
+            "caster_braking_0.8g_pct": r(100 * (caster + brake)),
+            "drive_wheels_braking_pct": r(100 * (1 - caster - brake)),
+            "parts": [(p[0], r(p[1]), r(p[2]), r(p[3])) for p in parts]}
 
 
 def hill_limits():
@@ -1219,6 +1359,9 @@ def summary():
         "caster_pad_ir_pad": [r(CASTER_PAD), r(SENSOR_PAD)],
         "caster_channel_ir_nut_depth": [r(CASTER_CHANNEL), r(SENSOR_NUT_DEPTH)],
         "strap_screw_spare": r(SCREW_L - FRAME_T - STRAP_TAB_H),
+        "tail_scrape_deg": tail_scrape(),
+        "battery_underside_over_board": r(BATT_SEAT),
+        "encoder_x_z_ranges": [[r(v) for v in ENC_X], [r(v) for v in ENC_Z]] if MOTOR == "encoder" else None,
     }
 
 
@@ -1250,7 +1393,7 @@ def export_stls(folder):
         if not comp or comp.bRepBodies.count == 0:
             continue
         path = os.path.join(folder, name.lower().replace(" ", "_")
-                            + (VARIANT if name == "Frame" else "") + ".stl")
+                            + (VARIANT if name == "Frame" and not SUFFIX else "") + SUFFIX + ".stl")
         opts = em.createSTLExportOptions(comp if comp.bRepBodies.count > 1 else comp.bRepBodies.item(0), path)
         opts.meshRefinement = adsk.fusion.MeshRefinementSettings.MeshRefinementHigh
         em.execute(opts)
