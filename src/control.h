@@ -24,7 +24,8 @@ void controlReset();
 float controlCorrection(float position, float dt);
 
 // position: -1..+1 from readPosition(). dt: seconds since the last call.
-void controlUpdate(float position, float dt, float& left, float& right);
+// baseScale multiplies the base speed (downhill slow-down); steering is kept.
+void controlUpdate(float position, float dt, float& left, float& right, float baseScale = 1.0f);
 
 // Manual drive: throttle -1..+1 (forward), steer -1..+1 (right) mixed into
 // left/right speed, at most maxSpeed (fraction of rated motor voltage).

@@ -4,9 +4,14 @@
 // A task on core 0 reads the INA219 every 20 ms and integrates the energy
 // taken from the battery: on the Original board the 5 V rail's energy
 // divided by the MINI560 efficiency, on PcbChassis the pack's own energy.
-// Battery % = 1 - used / usable capacity, so it is only right if the phone's
-// "Battery charged" button is pressed after each full charge. Energy used is
-// kept in flash across power-offs.
+// Energy used is kept in flash across power-offs.
+//
+// Battery %:
+//   PcbChassis  from the pack voltage, corrected for the load and smoothed
+//               (BATTERY_* in config.h). Needs no "Battery charged" press.
+//   Original    1 - used / usable capacity, so it is only right if the
+//               phone's "Battery charged" button is pressed after each full
+//               charge (the battery itself can't be measured).
 //
 // On PcbChassis the task also hands the measured motor supply (the INA219
 // bus voltage, which feeds the DRV8833) to motorsSetSupplyVoltage().
@@ -21,7 +26,9 @@ struct PowerStats {
     float    avgPowerW;    // battery-side power, ~30 s average
     float    usedWh;       // battery energy used since the last "charged" reset
     float    usableWh;     // BATTERY_MAH x BATTERY_NOMINAL_V x BATTERY_USABLE
-    float    percent;      // 0..1
+    float    percent;      // 0..1, or -1 when unknown (PcbChassis with no battery)
+    bool     fromVoltage;  // percent comes from the pack voltage (PcbChassis)
+    float    restV;        // estimated resting pack voltage (PcbChassis), 0 if unknown
     uint32_t timeLeftS;    // at avgPowerW; 0 if unknown
     bool     low;          // battery nearly empty (rail sagging, or pack below BATTERY_LOW_V)
 };

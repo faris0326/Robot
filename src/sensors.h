@@ -15,7 +15,7 @@
 
 enum class LineState : uint8_t {
     OnLine,  // at least one sensor sees the line
-    InGap,   // digital arrays only: line between two sensors (never set here)
+    InGap,   // line gone from the middle of the array (hill crest, gap in the line)
     Lost,    // no sensor sees the line
 };
 
@@ -30,13 +30,22 @@ inline bool calLineIsWhite(const SensorCal& c) { return c.line[0] < c.background
 void sensorsBegin();
 
 // Reads the array and returns the line position: -1 = far left, 0 = centre,
-// +1 = far right. When no sensor sees the line it returns -1 or +1 toward
-// the side the line was last clearly seen on: the outer sensor that last saw
-// it alone, else the last position beyond LOST_SIDE_MIN (0 if neither).
+// +1 = far right. When no sensor sees the line:
+//   Lost   it went off a side: returns -1 or +1 toward the side it was last
+//          clearly seen on (the outer sensor that last saw it alone, else the
+//          last position beyond LOST_SIDE_MIN; 0 if neither).
+//   InGap  it vanished from the middle (centred, no outer sensor saw it in
+//          the last GAP_EDGE_RECENT_MS): a hill crest or a gap. Returns 0.
+// Which one is decided when the line goes and kept until it is seen again.
+// While sensorsCrossing() it returns the position from before the crossing.
 float readPosition();
 
 // From the last read; bit i set = sensor i level above IR_ON_LINE, bit 0 = leftmost.
 uint32_t  sensorsBits();
+int8_t    sensorsLastSide();  // -1 / +1: side the line was last clearly seen on, 0 if never
+// Two lines, or a line at least CROSSING_MIN_SENSORS wide: readPosition()
+// returns the position from just before (holds the heading over a crossing).
+bool      sensorsCrossing();
 // -1 / +1 when a sharp corner to that side is under the array (a wide line,
 // at least CORNER_MIN_SENSORS, reaching one outer sensor), else 0.
 int8_t    sensorsCorner();

@@ -45,10 +45,11 @@ float controlCorrection(float position, float dt) {
     return gains.kp * smoothPos + gains.kd * deriv;
 }
 
-void controlUpdate(float position, float dt, float& left, float& right) {
+void controlUpdate(float position, float dt, float& left, float& right, float baseScale) {
     float correction = controlCorrection(position, dt);
-    float l = gains.base + correction;
-    float r = gains.base - correction;
+    float base = gains.base * baseScale;
+    float l = base + correction;
+    float r = base - correction;
 
     // If the outer wheel would exceed full speed, shift both down instead of
     // clipping one, so the steering difference is kept.

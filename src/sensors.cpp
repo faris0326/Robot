@@ -27,7 +27,10 @@ uint32_t  bits = 0;
 LineState state = LineState::Lost;
 float     lastSeen = 0.0f;
 int8_t    lastSide = 0;    // -1 / +1: side the line was last clearly seen on
+uint32_t  edgeMs = 0;      // millis() when an outer sensor last saw the line
+bool      gapLoss = false; // the line went from the middle (InGap), not off a side
 int8_t    corner = 0;      // -1 / +1: a corner to that side is under the array
+bool      crossing = false; // two lines or a wide line: position held
 
 // Line colour in use (core 1) and the one asked for from the phone (core 0).
 // readPosition() applies a change, so only core 1 ever rewrites `cal`.
@@ -139,8 +142,14 @@ float readPosition() {
     }
 
     corner = 0;
+    crossing = false;
     if (best < IR_ON_LINE) {
-        state = LineState::Lost;
+        // Decided once, as the line goes: from the middle, or off a side.
+        if (state == LineState::OnLine) {
+            gapLoss = fabsf(lastSeen) < LOST_SIDE_MIN && millis() - edgeMs > GAP_EDGE_RECENT_MS;
+        }
+        state = gapLoss ? LineState::InGap : LineState::Lost;
+        if (gapLoss) return 0.0f;
         if (lastSide != 0) return lastSide;
         if (lastSeen < 0.0f) return -1.0f;
         if (lastSeen > 0.0f) return 1.0f;
@@ -148,12 +157,22 @@ float readPosition() {
     }
 
     state = LineState::OnLine;
-    lastSeen = constrain(sum / total * weightScale, -1.0f, 1.0f);
+
+    // Crossing: a second line (two separate patches) or a wide line. Keep
+    // the position from before it, so the robot holds its heading over the
+    // intersection instead of steering into the other line.
+    uint8_t patches = 0;
+    for (uint8_t i = 0; i < IR_COUNT; i++) {
+        if ((bits >> i & 1) && (i == 0 || !(bits >> (i - 1) & 1))) patches++;
+    }
+    crossing = patches >= 2 || __builtin_popcount(bits) >= CROSSING_MIN_SENSORS;
+    if (!crossing) lastSeen = constrain(sum / total * weightScale, -1.0f, 1.0f);
 
     // Which way the line went. At a 90-degree corner the side branch reaches
     // one outer sensor, then the line can vanish under the middle sensors
     // last, so the sign of the very last position would be a guess.
     bool leftEdge = level[0] > IR_ON_LINE, rightEdge = level[IR_COUNT - 1] > IR_ON_LINE;
+    if (leftEdge || rightEdge) edgeMs = millis();
     if (leftEdge != rightEdge) lastSide = leftEdge ? -1 : 1;
     else if (fabsf(lastSeen) > LOST_SIDE_MIN) lastSide = lastSeen < 0.0f ? -1 : 1;
 
@@ -164,6 +183,8 @@ float readPosition() {
 
 uint32_t  sensorsBits() { return bits; }
 int8_t    sensorsCorner() { return corner; }
+int8_t    sensorsLastSide() { return lastSide; }
+bool      sensorsCrossing() { return crossing; }
 LineState lineState()   { return state; }
 
 void sensorsLevels(uint8_t* out) {

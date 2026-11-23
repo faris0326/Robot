@@ -16,9 +16,10 @@
 //     0  u8  type = 1            1  u8  version = 2
 //     2  u16 sensor bits         4  u32 time ms
 //     8  i16 position x10000    10  i16 left speed x10000 (1.0 = rated motor V)
-//    12  i16 right speed x10000 14  u8  line state (0 on, 1 gap, 2 lost)
+//    12  i16 right speed x10000 14  u8  line state (0 on, 1 gap: gone from the
+//                                     middle, driving straight; 2 lost)
 //    15  u8  flags (bit0 running, bits1-3 drive mode: 0 auto, 1 manual, 2 stop,
-//              3 calibrate, 4 center test)
+//              3 calibrate, 4 center test; bit4 crossing: position held)
 //    16  u16 lap number         18  u16 reserved
 //    20  u32 last lap ms
 //    24  u16 loop max us        26  u16 period max us
@@ -43,10 +44,12 @@
 //                                    4 center test: turn on the spot only)
 //   type 0x11 manual drive, 5 bytes: 0 u8 type, 1 i16 throttle x10000,
 //                                    3 i16 steer x10000
-//   type 0x12 tuning, 37 bytes: 0 u8 type, then f32 each: 1 auto speed,
+//   type 0x12 tuning, 49 bytes: 0 u8 type, then f32 each: 1 auto speed,
 //                                  5 manual max, 9 kp, 13 kd, 17 motor trim,
 //                                  21 corner brake ms, 25 spin speed,
-//                                  29 calibrate spin speed, 33 smoothing ms
+//                                  29 calibrate spin speed, 33 smoothing ms,
+//                                  37 hill/gap straight ms, 41 downhill speed
+//                                  factor, 45 downhill ms
 //                                  (the robot clamps every field; a shorter
 //                                  older message keeps the fields it lacks)
 //   type 0x13 reset tuning, 1 byte: erase the saved tuning, back to config.h

@@ -234,7 +234,7 @@ input[type=range] { width: 100%; height: 32px; margin: 4px 0 0; accent-color: va
     <div><div class="label">Usable</div><div class="v mono" id="bCap">—</div></div>
     <div><div class="label">Avg power</div><div class="v mono" id="bAvg">—</div></div>
   </div>
-  <div class="hint">Estimated from energy used. Tap below after every full charge.</div>
+  <div class="hint" id="bHint">Estimated from energy used. Tap below after every full charge.</div>
   <button class="ghost" id="battReset">Battery charged: reset to 100%</button>
 </section>
 
@@ -365,6 +365,7 @@ function onBinary(buf) {
       state: dv.getUint8(14),
       running: (dv.getUint8(15) & 1) !== 0,
       mode: (dv.getUint8(15) >> 1) & 7,
+      crossing: (dv.getUint8(15) >> 4 & 1) === 1,
       lap: dv.getUint16(16, true),
       lastLap: dv.getUint32(20, true),
       loopUs: dv.getUint16(24, true),
@@ -559,6 +560,7 @@ function setBar(id, load) {
 }
 // ---- Battery (estimate from the INA219: 5 V rail, or the pack on the PCB) --
 let inaPresent = false;
+let latestBattFromV = false;   // % from the pack voltage (PCB board): the button only resets "Used"
 function fmtDuration(s) {
   const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return h ? `${h} h ${m} min` : `${m} min`;
@@ -567,29 +569,40 @@ function battLevel(p) { return p > 0.3 ? "" : p > 0.15 ? "warn" : "bad"; }
 function onBattery(m) {
   if (m.ina === undefined) return;
   inaPresent = m.ina;
-  const p = m.battPct;
+  // From the pack voltage (PCB board) the % needs no reset; -1 = no battery voltage yet.
+  latestBattFromV = !!m.battFromV;
+  const known = m.battPct >= 0;
+  const p = known ? m.battPct : 0;
   $("bBar").style.width = `${Math.round(p * 100)}%`;
   $("bBar").className = battLevel(p);
-  setText("bPct", `${Math.round(p * 100)}%`);
+  setText("bPct", known ? `${Math.round(p * 100)}%` : "—");
+  if (m.battFromV) {
+    setText("bHint", m.battRestV > 0
+      ? `From the battery voltage: about ${m.battRestV.toFixed(2)} V at rest (${(m.battRestV / 2).toFixed(2)} V per cell), corrected for the current the robot draws.`
+      : "From the battery voltage, once a battery is switched on.");
+    setText("battReset", "Reset the energy-used counter");
+  }
   setText("bUsed", `${m.battUsedWh.toFixed(2)} Wh`);
   setText("bCap", `${m.battUsableWh.toFixed(1)} Wh`);
   setText("bAvg", inaPresent ? `${m.avgW.toFixed(2)} W` : "—");
   setText("bLeft", !inaPresent ? "INA219 not found: check its wiring (SDA 41, SCL 42, 3V3)"
+    : !known ? "No battery voltage: switch the battery on"
     : m.battLeftS ? `About ${fmtDuration(m.battLeftS)} left at ${m.avgW.toFixed(1)} W`
     : "Measuring power use…");
 
   const tag = $("battTag");
-  const st = !inaPresent ? "gap" : m.battLow ? "lost" : "ok";
-  setText("battTag", !inaPresent ? "No sensor" : m.battLow ? "Battery low" : "OK");
+  const st = !inaPresent || !known ? "gap" : m.battLow ? "lost" : "ok";
+  setText("battTag", !inaPresent ? "No sensor" : !known ? "No battery" : m.battLow ? "Battery low" : "OK");
   tag.className = `tag ${st}`;
 
   $("hBatt").hidden = false;
   $("hBattFill").style.width = `${Math.round(p * 14)}px`;
   $("hBattFill").className = m.battLow ? "bad" : battLevel(p);
-  setText("hBattPct", `${Math.round(p * 100)}%`);
+  setText("hBattPct", known ? `${Math.round(p * 100)}%` : "—");
 }
 $("battReset").addEventListener("click", () => {
-  if (!confirm("Battery fully charged? This resets the estimate to 100%.")) return;
+  if (!confirm(latestBattFromV ? "Reset the energy-used counter to 0?"
+                               : "Battery fully charged? This resets the estimate to 100%.")) return;
   sendBin(new Uint8Array([0x14]).buffer);
 });
 
@@ -610,7 +623,8 @@ function onStats(m) {
 
 // ---- Tuning sliders ------------------------------------------------------
 // Order matches the 0x12 message: auto speed, manual max, kp, kd, trim,
-// corner brake ms, spin speed, calibrate spin speed, smoothing ms.
+// corner brake ms, spin speed, calibrate spin speed, smoothing ms, gap ms,
+// downhill speed factor, downhill ms.
 // Slider values are in display units; scale converts to the robot's value.
 const TUNE = [
   { key: "autoSpeed", cfg: "BASE_SPEED", label: "Auto speed", min: 0, max: 100, step: 1, scale: 100,
@@ -631,6 +645,12 @@ const TUNE = [
     fmt: (v) => `${v}% · ${(v / 100 * motorV).toFixed(1)} V` },
   { key: "smoothMs", cfg: "POSITION_SMOOTH_MS", label: "Smoothing · less jitter", min: 0, max: 30, step: 1, scale: 1,
     dp: 0, fmt: (v) => v ? `${v} ms` : "off" },
+  { key: "gapMs", cfg: "GAP_STRAIGHT_MS", label: "Hill / gap · drive straight", min: 0, max: 1000, step: 25, scale: 1,
+    dp: 0, fmt: (v) => v ? `${v} ms` : "off" },
+  { key: "downhill", cfg: "DOWNHILL_SCALE", label: "Downhill · speed after a crest", min: 20, max: 100, step: 5, scale: 100,
+    fmt: (v) => v >= 100 ? "off" : `${v}% of Auto speed` },
+  { key: "downhillMs", cfg: "DOWNHILL_MS", label: "Downhill · how long", min: 0, max: 3000, step: 100, scale: 1,
+    dp: 0, fmt: (v) => `${(v / 1000).toFixed(1)} s` },
 ];
 let sliderBusy = false;   // finger on a slider: don't overwrite it from the robot
 let tuneSentAt = 0, tuneTimer = null;
@@ -858,7 +878,8 @@ function tick(now) {
     const st = ["ok", "gap", "lost"][f.state] || "lost";
     // While lost, the position is the side the robot remembers the line went (-1 / +1).
     const lostSide = f.pos < 0 ? " → turning left" : f.pos > 0 ? " → turning right" : "";
-    setText("lineTag", f.state === 2 ? `Lost${lostSide}` : ["On line", "Gap"][f.state] || "?");
+    setText("lineTag", f.state === 2 ? `Lost${lostSide}` : f.crossing ? "Crossing → straight"
+      : ["On line", "Gap → straight"][f.state] || "?");
     if (tag.dataset.st !== st) { tag.className = `tag ${st}`; tag.dataset.st = st; }
     setText("runState", f.running ? "" : "· start delay");
 
@@ -902,7 +923,7 @@ function tick(now) {
 // Simulates the robot side, including modes, manual mixing and the dead-man timeout.
 function startDemo() {
   connected = true;
-  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0, brakeMs: 40, pivot: 0.6, calSpeed: 1.0, smoothMs: 4 };
+  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0, brakeMs: 40, pivot: 0.6, calSpeed: 1.0, smoothMs: 4, gapMs: 300, downhill: 0.6, downhillMs: 1000 };
   const tu = { ...DEFAULTS, save: "defaults" };
   let changedT = 0;
   const N = 8;

@@ -61,7 +61,7 @@ void formatBits(char* row) {
 
 const char* stateLabel() {
     switch (lineState()) {
-        case LineState::InGap: return "  GAP";
+        case LineState::InGap: return "  GAP (straight)";
         case LineState::Lost:  return "  LOST";
         default:               return "";
     }

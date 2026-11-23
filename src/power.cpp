@@ -84,6 +84,35 @@ void publish(const PowerStats& s) {
     portEXIT_CRITICAL(&mux);
 }
 
+// Li-ion cell resting voltage at 0, 5, 10 .. 100 % charge (typical 18650).
+constexpr float CELL_REST_V[] = {3.27f, 3.61f, 3.69f, 3.71f, 3.73f, 3.75f, 3.77f,
+                                 3.79f, 3.80f, 3.82f, 3.84f, 3.85f, 3.87f, 3.91f,
+                                 3.95f, 3.98f, 4.02f, 4.08f, 4.11f, 4.15f, 4.20f};
+constexpr int CELL_STEPS = sizeof CELL_REST_V / sizeof CELL_REST_V[0] - 1;
+
+// Charge 0..1 from the pack's resting voltage, interpolated in the table.
+float chargeFromRestV(float packV) {
+    float cellV = packV / BATTERY_CELLS;
+    if (cellV <= CELL_REST_V[0]) return 0.0f;
+    if (cellV >= CELL_REST_V[CELL_STEPS]) return 1.0f;
+    int i = 0;
+    while (cellV > CELL_REST_V[i + 1]) i++;
+    float frac = (cellV - CELL_REST_V[i]) / (CELL_REST_V[i + 1] - CELL_REST_V[i]);
+    return (i + frac) / CELL_STEPS;
+}
+
+// PcbChassis: estimate the resting pack voltage from the voltage and current
+// under load, smoothed. NaN while no battery is connected.
+void trackRestVoltage(float packV, float amps, float dt, float& restV) {
+    if (packV < BATTERY_PRESENT_V) {
+        restV = NAN;
+        return;
+    }
+    float now = packV + max(amps, 0.0f) * BATTERY_INTERNAL_OHMS;
+    if (isnan(restV)) restV = now;
+    else restV += dt / (BATTERY_FILTER_S + dt) * (now - restV);
+}
+
 // PcbChassis: hand the measured motor supply to the motor driver. A rise is
 // taken at once and a drop low-passed, so the duty errs low; an impossible
 // reading (or none) makes the motors assume a full battery again.
@@ -101,6 +130,7 @@ void feedMotorSupply(float volts, float dt, float& filtered) {
 void powerTask(void*) {
     bool     configured = false;
     float    supplyV = NAN;     // filtered motor supply (PcbChassis)
+    float    restV = NAN;       // estimated resting pack voltage (PcbChassis)
     uint32_t nextTryMs = 0;
     bool     lowCandidate = false;
     uint32_t lowSinceMs = 0;
@@ -130,11 +160,17 @@ void powerTask(void*) {
         bool ok = configured && readReg(REG_SHUNT, rawShunt) && readReg(REG_BUS, rawBus);
         if (!ok) {
             configured = false;
-            if (INA219_ON_BATTERY) feedMotorSupply(NAN, dt, supplyV);
             PowerStats s = {};
             s.usedWh = (float)usedWh;
             s.usableWh = USABLE_WH;
-            s.percent = constrain(1.0f - s.usedWh / USABLE_WH, 0.0f, 1.0f);
+            s.fromVoltage = INA219_ON_BATTERY;
+            if (INA219_ON_BATTERY) {
+                feedMotorSupply(NAN, dt, supplyV);
+                restV = NAN;
+                s.percent = -1.0f;  // no sensor, no voltage
+            } else {
+                s.percent = constrain(1.0f - s.usedWh / USABLE_WH, 0.0f, 1.0f);
+            }
             publish(s);
             if (justReset) saveNow = true;
             continue;
@@ -149,8 +185,12 @@ void powerTask(void*) {
         // the buck. PcbChassis: Vin+ is the pack itself.
         float battW = INA219_ON_BATTERY ? max(inW, 0.0f) : max(inW, 0.0f) / BUCK_EFFICIENCY;
 
-        // PcbChassis: the DRV8833 is fed after the shunt, so its supply is busV.
-        if (INA219_ON_BATTERY) feedMotorSupply(busV, dt, supplyV);
+        // PcbChassis: the DRV8833 is fed after the shunt, so its supply is
+        // busV; the pack itself is Vin+.
+        if (INA219_ON_BATTERY) {
+            feedMotorSupply(busV, dt, supplyV);
+            trackRestVoltage(inV, amps, dt, restV);
+        }
 
         usedWh += battW * dt / 3600.0;
 
@@ -173,7 +213,9 @@ void powerTask(void*) {
             lowCandidate = false;
         }
 
-        float leftWh = USABLE_WH - (float)usedWh;
+        float percent = INA219_ON_BATTERY ? (isnan(restV) ? -1.0f : chargeFromRestV(restV))
+                                          : constrain(1.0f - (float)usedWh / USABLE_WH, 0.0f, 1.0f);
+        float leftWh = INA219_ON_BATTERY ? max(percent, 0.0f) * USABLE_WH : USABLE_WH - (float)usedWh;
         PowerStats s;
         s.present = true;
         s.busV = busV;
@@ -182,7 +224,9 @@ void powerTask(void*) {
         s.avgPowerW = avgW;
         s.usedWh = (float)usedWh;
         s.usableWh = USABLE_WH;
-        s.percent = constrain(leftWh / USABLE_WH, 0.0f, 1.0f);
+        s.percent = percent;
+        s.fromVoltage = INA219_ON_BATTERY;
+        s.restV = isnan(restV) ? 0.0f : restV;
         s.timeLeftS = (avgW > 0.05f && leftWh > 0.0f) ? (uint32_t)(leftWh / avgW * 3600.0f) : 0;
         s.low = lowCandidate && millis() - lowSinceMs >= LOW_HOLD_MS;
         publish(s);
@@ -204,7 +248,8 @@ void powerBegin() {
     PowerStats s = {};
     s.usedWh = wh;
     s.usableWh = USABLE_WH;
-    s.percent = constrain(1.0f - wh / USABLE_WH, 0.0f, 1.0f);
+    s.fromVoltage = INA219_ON_BATTERY;
+    s.percent = INA219_ON_BATTERY ? -1.0f : constrain(1.0f - wh / USABLE_WH, 0.0f, 1.0f);  // PcbChassis: until read
     publish(s);
 
     xTaskCreatePinnedToCore(powerTask, "power", 3072, nullptr, 1, nullptr, 0);

@@ -29,6 +29,9 @@ struct Tuning {
     float pivotSpeed;     // spin speed when the line is lost        (PIVOT_SPEED)
     float calSpeed;       // calibration spin speed                  (CAL_SPIN_SPEED)
     float smoothMs;       // position smoothing, 0 = off             (POSITION_SMOOTH_MS)
+    float gapMs;          // drive straight after a hill crest / gap (GAP_STRAIGHT_MS)
+    float downhillScale;  // Auto speed factor after a crest, 1 = off (DOWNHILL_SCALE)
+    float downhillMs;     // how long after the crest                 (DOWNHILL_MS)
 };
 
 struct TelemetrySample {
@@ -39,6 +42,7 @@ struct TelemetrySample {
     float    dutyLeft;     // -1 .. +1
     float    dutyRight;
     uint8_t  lineState;    // LineState: 0 on line, 1 gap, 2 lost
+    bool     crossing;     // position held over a crossing
     bool     running;      // false during the start delay
     DriveMode mode;
     uint16_t lap;          // laps completed

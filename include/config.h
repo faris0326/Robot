@@ -174,6 +174,12 @@ constexpr float    CORNER_BRAKE_MS    = 40.0f;
 // A corner shows as a wide line: at least this many sensors on the line,
 // reaching one outer sensor (a followed line covers 2-3 sensors).
 constexpr uint8_t  CORNER_MIN_SENSORS = 4;
+// Crossing (figure-8 track): when the array sees two separate patches of
+// line, or a line this wide (sensors), the robot holds the position from
+// just before and drives over instead of turning into the other line. A 90°
+// corner looks wide too: held straight, its line then runs out to that side
+// and the lost-line logic turns into it.
+constexpr uint8_t  CROSSING_MIN_SENSORS = 4;
 // The brake re-arms after this long following a plain line, so it can't fire
 // again in the same corner, nor from a standstill right after a start.
 constexpr uint32_t CORNER_REARM_MS    = 200;
@@ -181,12 +187,28 @@ constexpr uint32_t CORNER_REARM_MS    = 200;
 // no outer sensor saw it alone.
 constexpr float LOST_SIDE_MIN = 0.20f;
 
-// No sensor sees the line for longer than this -> brake until it is seen
-// again (long enough to spin past 90 degrees). GAP_TIMEOUT_MS only applies to
-// digital arrays, where the line can sit between two sensors; the analog
-// array never reports a gap.
+// Line gone from the MIDDLE of the array (no outer sensor saw it within
+// GAP_EDGE_RECENT_MS and the position was within LOST_SIDE_MIN): a hill
+// crest, where the sensor boom sticks out over the top, or a gap in the line.
+// The robot then drives straight on (no corner brake) for gapMs (live slider
+// "Hill / gap", default GAP_STRAIGHT_MS) before searching like a lost line.
+constexpr float    GAP_STRAIGHT_MS    = 300.0f;
+// Downhill after a crest: gravity speeds the robot up beyond what the motor
+// voltage gives on the flat (no encoders to see it), so it reaches the next
+// corner too fast. When the line comes back after a crest/gap that lasted
+// at least DOWNHILL_MIN_GAP_MS (shorter = tape flicker, ignored), Auto drives
+// at DOWNHILL_SCALE x Auto speed for DOWNHILL_MS (lower voltage also lets the
+// motors hold it back). Not during the gap itself: the wheels are still on
+// the way up there and need full power to get over the top. Live sliders
+// "Downhill"; scale 1.0 = off.
+constexpr float    DOWNHILL_SCALE      = 0.60f;
+constexpr float    DOWNHILL_MS         = 1000.0f;
+constexpr uint32_t DOWNHILL_MIN_GAP_MS = 40;
+constexpr uint32_t GAP_EDGE_RECENT_MS = 150;
+
+// No sensor sees the line for longer than this (plus gapMs after a gap) ->
+// brake until it is seen again (long enough to spin past 90 degrees).
 constexpr uint32_t LOST_TIMEOUT_MS = 1500;
-constexpr uint32_t GAP_TIMEOUT_MS  = 2000;
 
 // ---------------------------------------------------------------------------
 // Drive modes, switched from the phone page
@@ -229,6 +251,10 @@ constexpr char     WIFI_PASS[]      = "12345678";  // 8..63 characters, or "" fo
 constexpr uint8_t  WIFI_CHANNEL     = 6;
 constexpr uint8_t  WIFI_MAX_CLIENTS = 2;
 constexpr uint16_t WS_PORT          = 81;  // WebSocket; the page is on port 80
+// Over-the-air uploads (ota.h). The port must match upload_flags in
+// platformio.ini [env:robot_ota]; the password lives there too ([ota]).
+constexpr char     OTA_HOSTNAME[]   = "line-follower";
+constexpr uint16_t OTA_PORT         = 3232;
 constexpr uint32_t TELEMETRY_HZ     = 40;  // frames per second sent to the phone
 // Tuning from the phone is saved to flash this long after the last change,
 // and never while Auto is driving (a flash write pauses both cores briefly).
@@ -258,6 +284,16 @@ constexpr float RAIL_LOW_V        = 4.75f;       // Original
 // PcbChassis: the pack itself below this for 2 s means "battery low"
 // (3.2 V per cell, under load).
 constexpr float BATTERY_LOW_V     = 6.4f;
+// PcbChassis: the charge % comes from the pack voltage (a Li-ion resting-
+// voltage table in power.cpp), not from counting energy. While the robot
+// draws current the pack voltage drops by I x its internal resistance
+// (cells, BMS, switch, wiring; the shunt is outside the measurement), so
+// that is added back, and the result is smoothed over BATTERY_FILTER_S.
+// Below BATTERY_PRESENT_V there is no battery (e.g. USB power only).
+constexpr uint8_t BATTERY_CELLS         = 2;
+constexpr float   BATTERY_INTERNAL_OHMS = 0.15f;
+constexpr float   BATTERY_FILTER_S      = 20.0f;
+constexpr float   BATTERY_PRESENT_V     = 5.0f;
 
 // Encoders: not used. The new 3 V motors (2026-10-21) are run without them;
 // GPIO 11 is now the IR LED pin.

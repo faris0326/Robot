@@ -8,6 +8,7 @@
 #include "config.h"
 #include "control.h"
 #include "motors.h"
+#include "ota.h"
 #include "settings.h"
 #include "shared.h"
 #include "power.h"
@@ -76,7 +77,7 @@ size_t encodeSample(const TelemetrySample& s, const PowerStats& pw, uint8_t* f) 
     put16(f + 10, scaled(s.dutyLeft));
     put16(f + 12, scaled(s.dutyRight));
     put8(f + 14, s.lineState);
-    put8(f + 15, (s.running ? 1 : 0) | ((uint8_t)s.mode & 7) << 1);
+    put8(f + 15, (s.running ? 1 : 0) | ((uint8_t)s.mode & 7) << 1 | (s.crossing ? 1 : 0) << 4);
     put16(f + 16, s.lap);
     put32(f + 20, s.lastLapMs);
     put16(f + 24, s.loopMaxUs);
@@ -134,13 +135,13 @@ void formatTuning(char* out, size_t n) {
     Tuning t = sharedTuning();
     snprintf(out, n,
              "\"autoSpeed\":%.3f,\"manualMax\":%.3f,\"kp\":%.3f,\"kd\":%.4f,\"trim\":%.3f,"
-             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"save\":\"%s\"",
+             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"gapMs\":%.0f,\"downhill\":%.3f,\"downhillMs\":%.0f,\"save\":\"%s\"",
              t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, t.calSpeed,
-             t.smoothMs, saveStatus());
+             t.smoothMs, t.gapMs, t.downhillScale, t.downhillMs, saveStatus());
 }
 
 void sendHello(uint8_t client) {
-    char tune[200];
+    char tune[288];
     formatTuning(tune, sizeof tune);
     char msg[448];
     snprintf(msg, sizeof msg,
@@ -179,9 +180,9 @@ void serviceCalibration() {
 
 // Tell every phone the current tuning, so all sliders agree.
 void broadcastTuning() {
-    char tune[200];
+    char tune[288];
     formatTuning(tune, sizeof tune);
-    char msg[240];
+    char msg[320];
     snprintf(msg, sizeof msg, "{\"type\":\"tuning\",%s}", tune);
     ws.broadcastTXT(msg);
 }
@@ -196,12 +197,13 @@ void broadcastStats() {
              "\"heap\":%lu,\"heapMin\":%lu,\"psram\":%lu,\"temp\":%.1f,"
              "\"rssi\":%d,\"clients\":%u,\"uptime\":%lu,\"mhz\":%u,"
              "\"ina\":%s,\"battPct\":%.3f,\"battLeftS\":%lu,\"battUsedWh\":%.3f,"
-             "\"battUsableWh\":%.2f,\"avgW\":%.3f,\"battLow\":%s}",
+             "\"battUsableWh\":%.2f,\"avgW\":%.3f,\"battLow\":%s,\"battFromV\":%s,\"battRestV\":%.2f}",
              st.cpuLoad[0], st.cpuLoad[1], st.controlLoad,
              (unsigned long)st.heapFree, (unsigned long)st.heapMin, (unsigned long)st.psramFree,
              st.tempC, st.rssi, st.clients, (unsigned long)st.uptimeS, st.cpuMhz,
              pw.present ? "true" : "false", pw.percent, (unsigned long)pw.timeLeftS, pw.usedWh,
-             pw.usableWh, pw.avgPowerW, pw.low ? "true" : "false");
+             pw.usableWh, pw.avgPowerW, pw.low ? "true" : "false", pw.fromVoltage ? "true" : "false",
+             pw.restV);
     ws.broadcastTXT(msg);
 }
 
@@ -221,13 +223,19 @@ void onCommand(const uint8_t* p, size_t len) {
     } else if (len >= 21 && p[0] == CMD_TUNING) {
         Tuning t = sharedTuning();
         t = {getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17),
-             t.cornerBrakeMs, t.pivotSpeed, t.calSpeed, t.smoothMs};
+             t.cornerBrakeMs, t.pivotSpeed, t.calSpeed, t.smoothMs, t.gapMs,
+             t.downhillScale, t.downhillMs};
         if (len >= 29) {
             t.cornerBrakeMs = getF32(p + 21);
             t.pivotSpeed = getF32(p + 25);
         }
         if (len >= 33) t.calSpeed = getF32(p + 29);
         if (len >= 37) t.smoothMs = getF32(p + 33);
+        if (len >= 41) t.gapMs = getF32(p + 37);
+        if (len >= 49) {
+            t.downhillScale = getF32(p + 41);
+            t.downhillMs = getF32(p + 45);
+        }
         sharedSetTuning(t);
         saveState = SaveState::Pending;
         tuningChangedMs = millis();
@@ -320,6 +328,7 @@ void netTask(void*) {
 
     Serial.printf("Telemetry: join Wi-Fi \"%s\", open http://%s\n",
                   WIFI_SSID, WiFi.softAPIP().toString().c_str());
+    otaBegin();
 
     sysmonBegin();
     onFlash = settingsLoad(flashTuning);
@@ -337,6 +346,7 @@ void netTask(void*) {
     for (;;) {
         http.handleClient();
         ws.loop();
+        otaHandle();
         forwardLapEvents();
         serviceSave();
         serviceCalibration();

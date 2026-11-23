@@ -51,6 +51,12 @@ bool     brakeArmed = false;
 uint32_t brakeUntilMs = 0;
 uint32_t plainSinceMs = 0;  // following a plain line (no corner) since
 
+// Downhill slow-down: Auto speed x downhillScale for downhillMs once the
+// line is back after a crest/gap (see config.h).
+uint32_t downhillUntilMs = 0;
+bool     inGapLastTick = false;
+bool downhill() { return (int32_t)(downhillUntilMs - millis()) > 0; }
+
 // True while braking. Fires when a corner shows or the line is lost, if the
 // robot has followed a plain line for CORNER_REARM_MS since the last brake.
 bool cornerBrake(LineState state, const Tuning& t) {
@@ -111,6 +117,8 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
 
     // The corner brake only arms while following the line in Auto.
     if (!running || cmd.mode != DriveMode::Auto) {
+        downhillUntilMs = 0;
+        inGapLastTick = false;
         brakeArmed = false;
         brakeUntilMs = 0;
         plainSinceMs = millis();
@@ -131,12 +139,21 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     }
 
     LineState state = lineState();
+
+    // Line back after a crest long enough to be real: the robot is over the
+    // top now, so slow down for the way down. (lostSinceMs = gap start.)
+    if (inGapLastTick && state == LineState::OnLine && cmd.mode == DriveMode::Auto &&
+        millis() - lostSinceMs >= DOWNHILL_MIN_GAP_MS) {
+        downhillUntilMs = millis() + (uint32_t)t.downhillMs;
+    }
+    inGapLastTick = state == LineState::InGap;
+
     if (state != LineState::OnLine) {
         if (!wasLost) {
             wasLost = true;
             lostSinceMs = millis();
         }
-        uint32_t timeout = state == LineState::Lost ? LOST_TIMEOUT_MS : GAP_TIMEOUT_MS;
+        uint32_t timeout = LOST_TIMEOUT_MS + (state == LineState::InGap ? (uint32_t)t.gapMs : 0);
         if (millis() - lostSinceMs > timeout) {
             motorsStop();
             plainSinceMs = millis();  // re-arm only after following again
@@ -151,6 +168,23 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     bool hold = cmd.mode == DriveMode::Hold;
     if (!hold && cornerBrake(state, t)) {
         motorsSet(-1.0f, -1.0f);
+        return pos;
+    }
+
+    // Line gone from the middle (hill crest, gap): drive straight on for
+    // gapMs (the corner brake ignores this case), then search toward the side
+    // it was last seen on. The Center test doesn't drive forward: it stops.
+    if (state == LineState::InGap) {
+        if (hold) {
+            motorsStop();
+        } else if (millis() - lostSinceMs < (uint32_t)t.gapMs) {
+            motorsSet(t.autoSpeed, t.autoSpeed);  // full power to get over the top
+        } else if (int8_t side = sensorsLastSide()) {
+            float s = side * t.pivotSpeed;
+            motorsSet(s, -s);  // line left: left wheel back, right forward
+        } else {
+            motorsStop();
+        }
         return pos;
     }
 
@@ -175,7 +209,7 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     }
 
     float l, r;
-    controlUpdate(pos, dt, l, r);
+    controlUpdate(pos, dt, l, r, downhill() ? t.downhillScale : 1.0f);
     motorsSet(l, r);
     return pos;
 }
@@ -227,6 +261,7 @@ void controlTask(void*) {
         s.dutyLeft = motorsLeftDuty();
         s.dutyRight = motorsRightDuty();
         s.lineState = (uint8_t)lineState();
+        s.crossing = sensorsCrossing();
         s.running = running;
         s.mode = cmd.mode;
         s.lap = lapCount();
