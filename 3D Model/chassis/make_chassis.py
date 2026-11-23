@@ -39,8 +39,10 @@ LAYOUT = "balanced" (set it here, or define LAYOUT before exec'ing this file) bu
 variant with more weight on the drive wheels: battery centred over the axle in a low bay
 on the board (parts under it no taller than BATT_SEAT 8 mm; the ESP32 and other tall
 parts go ahead of it), board 20 mm further back, caster ahead of the IR array, cockpit,
-fin and rear wing moved back. Every export ends in "_balanced". balance() estimates the
-centre of mass and the caster load; tail_scrape() the nose-up tilt before the tail drags.
+fin and rear wing moved back. Every export ends in "_balanced". CASTER_POS = "middle"
+puts the caster right behind the IR array instead (frame only, "_mid_caster").
+balance() estimates the centre of mass and the caster load; tail_scrape() the nose-up
+tilt before the tail drags.
 
 MOTOR = "encoder" (same way, works with either LAYOUT) is for N20s with the Hall encoder
 board on the back. Its tab would hit the perfboard pointing up and the track pointing
@@ -84,6 +86,10 @@ LAYOUT = globals().get("LAYOUT", "current")
 # (see the MOTOR block after the constants); adds "_encoder" to the exports. Works with
 # either LAYOUT.
 MOTOR = globals().get("MOTOR", "plain")
+# Balanced layout only: "front" puts the caster ahead of the IR array, "middle" between
+# the wheels and the IR array, right behind it (adds "_mid_caster"; only the frame changes,
+# so it swaps in under the same body and parts).
+CASTER_POS = globals().get("CASTER_POS", "front")
 
 # --- Wheels and N20 motors: the original wheels press straight onto the shafts ---
 WHEEL_D = 33.3
@@ -202,7 +208,12 @@ if LAYOUT == "balanced":
     BOARD_HOLE_REAR_X -= BOARD_SHIFT     # -41.75
     BATT_X = 0.0                         # -5..+5 to trim the caster load
     BATT_SEAT = 8.0                      # bay parts no taller than this (flat modules, wires)
-    CASTER_IN_FRONT = True
+    if CASTER_POS not in ("front", "middle"):
+        raise ValueError("CASTER_POS must be 'front' or 'middle'")
+    CASTER_IN_FRONT = CASTER_POS == "front"
+    # middle: as close behind the IR array as the plate allows (1 mm short of the IR PCB),
+    # so the eyes dip least at the foot of a ramp
+    CASTER_X_BEHIND = 128.0
 elif LAYOUT != "current":
     raise ValueError("LAYOUT must be 'current' or 'balanced'")
 # --- MOTOR "encoder": tab up would hit the perfboard, tab down the track. So the motors
@@ -213,6 +224,12 @@ elif LAYOUT != "current":
 if MOTOR not in ("plain", "encoder"):
     raise ValueError("MOTOR must be 'plain' or 'encoder'")
 MOTOR_X, MOTOR_Z = (MOTOR_H, MOTOR_W) if MOTOR == "encoder" else (MOTOR_W, MOTOR_H)  # along X, tall
+if LAYOUT == "balanced" or MOTOR == "encoder":
+    # IR mounting holes 35.4 mm apart, centre to centre (user, 2026-11-23). The header gap
+    # between the arm's fingers narrows if needed to keep 1 mm of finger inside each hole;
+    # the plug has to fit between the brass standoffs on the IR board anyway.
+    SENSOR_HOLE_DY = 35.4
+    HEADER_W = min(HEADER_W, SENSOR_HOLE_DY - M3 - 2.0 - 1.8)
 
 # --- Derived ----------------------------------------------------------------
 AXLE_Z = WHEEL_D / 2
@@ -251,6 +268,9 @@ SENSOR_BAR_X = (SENSOR_HOLE_X - SENSOR_PAD_W / 2 - 2.0 - SENSOR_BAR_L,
 CASTER_X = SENSOR_FRONT_X + 1.0 + CASTER_PLATE_L / 2 if CASTER_IN_FRONT else CASTER_X_BEHIND
 VARIANT = "_front_caster" if CASTER_IN_FRONT else ""   # frame file of the current layout
 SUFFIX = ("_balanced" if LAYOUT == "balanced" else "") + ("_encoder" if MOTOR == "encoder" else "")
+MID_CASTER = LAYOUT == "balanced" and not CASTER_IN_FRONT
+if MID_CASTER:
+    SUFFIX += "_mid_caster"
 ENC_FRONT = Y_GEARBOX - GEARBOX_L - CAN_L  # |Y| of the can end, where the encoder board starts
 ENC_REAR = ENC_FRONT - ENC_L               # |Y| of the connector's back
 # encoder board along X (from the far flat to the tab end) and its Z range
@@ -1391,6 +1411,8 @@ def export_stls(folder):
     for name in PRINTED:
         comp = root.parentDesign.allComponents.itemByName(name)
         if not comp or comp.bRepBodies.count == 0:
+            continue
+        if MID_CASTER and name != "Frame":   # the other parts are those of the front-caster set
             continue
         path = os.path.join(folder, name.lower().replace(" ", "_")
                             + (VARIANT if name == "Frame" and not SUFFIX else "") + SUFFIX + ".stl")
