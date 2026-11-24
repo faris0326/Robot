@@ -4,7 +4,8 @@
 //
 // Messages sent to the phone:
 //   text   {"type":"hello",...}   once per connection (sensor count, rated motor
-//          volts "motorV", voltage limit "vLimit" / max "vMax", "inaBattery"
+//          volts "motorV", voltage limit "vLimit" / max "vMax", "inaBattery",
+//          "enc" (wheel speeds measured),
 //          (the INA219 measures the battery, not the 5 V rail), calibration
 //          "saved"/"default", line colour "white", tuning)
 //   text   {"type":"stats",...}   once a second: CPU load per core, control loop
@@ -23,8 +24,8 @@
 //    16  u16 lap number         18  u16 reserved
 //    20  u32 last lap ms
 //    24  u16 loop max us        26  u16 period max us
-//    28  i16 left speed  (reserved: encoders)
-//    30  i16 right speed (reserved: encoders)
+//    28  i16 left wheel speed mm/s  (encoders; 0 without them)
+//    30  i16 right wheel speed mm/s
 //    32  u16 INA219 bus mV: 5 V rail, or the battery on PcbChassis (0 if not found)
 //    34  i16 current mA  (INA219, whole robot)
 //    36  u8  sensor count n     37  u8 x n sensor levels (0 = background, 255 = line)
@@ -44,12 +45,12 @@
 //                                    4 center test: turn on the spot only)
 //   type 0x11 manual drive, 5 bytes: 0 u8 type, 1 i16 throttle x10000,
 //                                    3 i16 steer x10000
-//   type 0x12 tuning, 49 bytes: 0 u8 type, then f32 each: 1 auto speed,
+//   type 0x12 tuning, 53 bytes: 0 u8 type, then f32 each: 1 auto speed,
 //                                  5 manual max, 9 kp, 13 kd, 17 motor trim,
 //                                  21 corner brake ms, 25 spin speed,
 //                                  29 calibrate spin speed, 33 smoothing ms,
-//                                  37 hill/gap straight ms, 41 downhill speed
-//                                  factor, 45 downhill ms
+//                                  37 hill/gap straight ms, 41 speed-control
+//                                  target mm/s, 45 its KP, 49 its KI
 //                                  (the robot clamps every field; a shorter
 //                                  older message keeps the fields it lacks)
 //   type 0x13 reset tuning, 1 byte: erase the saved tuning, back to config.h

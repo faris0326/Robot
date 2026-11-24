@@ -24,8 +24,16 @@ void controlReset();
 float controlCorrection(float position, float dt);
 
 // position: -1..+1 from readPosition(). dt: seconds since the last call.
-// baseScale multiplies the base speed (downhill slow-down); steering is kept.
-void controlUpdate(float position, float dt, float& left, float& right, float baseScale = 1.0f);
+void controlUpdate(float position, float dt, float& left, float& right);
+
+// The same steering mix around a given base speed (from the speed control).
+void controlMix(float position, float dt, float base, float& left, float& right);
+
+// Speed control: the base speed (fraction of the voltage limit) that holds
+// targetMms, given the measured speed. mmsAtFull = speed at base 1.0. PI with
+// feed-forward; the integral stops while the output is saturated.
+float controlCruise(float targetMms, float measuredMms, float dt, float kp, float ki, float mmsAtFull);
+void  controlCruiseReset();
 
 // Manual drive: throttle -1..+1 (forward), steer -1..+1 (right) mixed into
 // left/right speed, at most maxSpeed (fraction of rated motor voltage).

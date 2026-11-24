@@ -79,8 +79,9 @@ void sharedSetTuning(const Tuning& in) {
     t.calSpeed = safe(in.calSpeed, 0.1f, 1.0f);
     t.smoothMs = safe(in.smoothMs, 0.0f, 30.0f);
     t.gapMs = safe(in.gapMs, 0.0f, 1000.0f);
-    t.downhillScale = isnan(in.downhillScale) ? 1.0f : constrain(in.downhillScale, 0.2f, 1.0f);
-    t.downhillMs = safe(in.downhillMs, 0.0f, 3000.0f);
+    t.cruiseMms = safe(in.cruiseMms, 0.0f, 4000.0f);
+    t.cruiseKp = safe(in.cruiseKp, 0.0f, 10.0f);
+    t.cruiseKi = safe(in.cruiseKi, 0.0f, 50.0f);
     portENTER_CRITICAL(&cmdMux);
     tuning = t;
     portEXIT_CRITICAL(&cmdMux);

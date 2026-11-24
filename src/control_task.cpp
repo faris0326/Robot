@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "control.h"
+#include "encoders.h"
 #include "lap_timer.h"
 #include "motors.h"
 #include "sensors.h"
@@ -51,11 +52,16 @@ bool     brakeArmed = false;
 uint32_t brakeUntilMs = 0;
 uint32_t plainSinceMs = 0;  // following a plain line (no corner) since
 
-// Downhill slow-down: Auto speed x downhillScale for downhillMs once the
-// line is back after a crest/gap (see config.h).
-uint32_t downhillUntilMs = 0;
-bool     inGapLastTick = false;
-bool downhill() { return (int32_t)(downhillUntilMs - millis()) > 0; }
+// Speed control is on when the encoders are measured and a target is set.
+bool cruiseOn(const Tuning& t) { return ENCODERS_FITTED && ENC_COUNTS_PER_REV > 0.0f && t.cruiseMms > 0.0f; }
+
+// Base speed that holds targetMms (fraction of the voltage limit). The
+// wheel speed at base 1.0 grows with the dev voltage unlock.
+float cruiseBase(float targetMms, float dt, const Tuning& t) {
+    float measured = (encoderSpeedMms(false) + encoderSpeedMms(true)) * 0.5f;
+    float mmsAtFull = SPEED_AT_FULL_MMS * motorsVoltageLimit() / MOTOR_RATED_V;
+    return controlCruise(targetMms, measured, dt, t.cruiseKp, t.cruiseKi, mmsAtFull);
+}
 
 // True while braking. Fires when a corner shows or the line is lost, if the
 // robot has followed a plain line for CORNER_REARM_MS since the last brake.
@@ -117,8 +123,7 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
 
     // The corner brake only arms while following the line in Auto.
     if (!running || cmd.mode != DriveMode::Auto) {
-        downhillUntilMs = 0;
-        inGapLastTick = false;
+        controlCruiseReset();
         brakeArmed = false;
         brakeUntilMs = 0;
         plainSinceMs = millis();
@@ -139,14 +144,6 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     }
 
     LineState state = lineState();
-
-    // Line back after a crest long enough to be real: the robot is over the
-    // top now, so slow down for the way down. (lostSinceMs = gap start.)
-    if (inGapLastTick && state == LineState::OnLine && cmd.mode == DriveMode::Auto &&
-        millis() - lostSinceMs >= DOWNHILL_MIN_GAP_MS) {
-        downhillUntilMs = millis() + (uint32_t)t.downhillMs;
-    }
-    inGapLastTick = state == LineState::InGap;
 
     if (state != LineState::OnLine) {
         if (!wasLost) {
@@ -178,7 +175,9 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         if (hold) {
             motorsStop();
         } else if (millis() - lostSinceMs < (uint32_t)t.gapMs) {
-            motorsSet(t.autoSpeed, t.autoSpeed);  // full power to get over the top
+            // Full speed to get over the top.
+            float s = cruiseOn(t) ? cruiseBase(t.cruiseMms, dt, t) : t.autoSpeed;
+            motorsSet(s, s);
         } else if (int8_t side = sensorsLastSide()) {
             float s = side * t.pivotSpeed;
             motorsSet(s, -s);  // line left: left wheel back, right forward
@@ -209,7 +208,8 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     }
 
     float l, r;
-    controlUpdate(pos, dt, l, r, downhill() ? t.downhillScale : 1.0f);
+    if (cruiseOn(t)) controlMix(pos, dt, cruiseBase(t.cruiseMms, dt, t), l, r);
+    else controlUpdate(pos, dt, l, r);
     motorsSet(l, r);
     return pos;
 }
@@ -235,6 +235,7 @@ void controlTask(void*) {
         DriveCommand cmd = sharedCommand();
         Tuning tune = sharedTuning();
         applyTuning(tune);
+        encodersUpdate();
         float pos = step(running, cmd, tune, period * 1e-6f);
 
         LapEvent lap;
@@ -262,6 +263,8 @@ void controlTask(void*) {
         s.dutyRight = motorsRightDuty();
         s.lineState = (uint8_t)lineState();
         s.crossing = sensorsCrossing();
+        s.speedLMms = encoderSpeedMms(false);
+        s.speedRMms = encoderSpeedMms(true);
         s.running = running;
         s.mode = cmd.mode;
         s.lap = lapCount();

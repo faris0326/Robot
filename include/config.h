@@ -50,24 +50,28 @@ constexpr float MOTOR_TRIM = 0.0f;
 constexpr uint32_t MOTOR_PWM_FREQ_HZ = 20000;  // above hearing range
 constexpr uint8_t  MOTOR_PWM_BITS    = 10;     // 0..1023
 
-// Motor voltage cap. The motors are rated 3 V; the driver (DRV8833 VM) runs
-// straight from the 2S battery (the MINI560 only feeds the ESP32 and sensors).
-// PWM duty = limit / supply voltage. Every speed in the code and on the phone
-// is a fraction of the limit: 1.0 (100 %) = 3 V unless unlocked (below).
+// Motor voltage cap. The motors are rated 6 V (encoder N20s with the fast
+// gearboxes, 2026-11-24; the earlier non-encoder motors were 3 V); the driver
+// (DRV8833 VM) runs straight from the 2S battery (the MINI560 only feeds the
+// ESP32 and sensors). PWM duty = limit / supply voltage, at most 100 %. Every
+// speed in the code and on the phone is a fraction of the limit: 1.0 (100 %)
+// = 6 V unless unlocked (below).
 //
 // MOTOR_SUPPLY_V is the supply assumed when it isn't measured (Original
 // board, or the INA219 not answering): a full battery, so the motors never
-// see more than the limit; as the battery runs down they get less (7.4 V:
-// 2.6 V). PcbChassis measures it instead (MOTOR_SUPPLY_* below).
-constexpr float MOTOR_RATED_V  = 3.0f;
+// see more than the limit; as the battery runs down they get less. Below the
+// limit the duty sits at 100 % and the motors just get the battery voltage.
+// PcbChassis measures it instead (MOTOR_SUPPLY_* below).
+constexpr float MOTOR_RATED_V  = 6.0f;
 constexpr float MOTOR_SUPPLY_V = 8.4f;  // 2S full charge (was 5.0 from the MINI560)
 constexpr float MAX_DUTY = MOTOR_RATED_V / MOTOR_SUPPLY_V;  // PWM duty at speed 1.0
 static_assert(MAX_DUTY > 0.0f && MAX_DUTY <= 1.0f, "rated voltage must not exceed the supply");
 // Dev unlock (phone "Dev" card): the motor voltage limit can be raised up to
-// this for more speed, overdriving the 3 V motors (more heat and wear).
+// this for more speed, overdriving the 6 V motors (more heat and wear): up to
+// the full battery, i.e. 100 % duty on a full pack.
 // Speed 1.0 then means the unlocked voltage, so every speed scales with it.
 // It is not saved: every power-on starts at MOTOR_RATED_V.
-constexpr float MOTOR_UNLOCK_MAX_V = 5.0f;
+constexpr float MOTOR_UNLOCK_MAX_V = MOTOR_SUPPLY_V;
 static_assert(MOTOR_UNLOCK_MAX_V >= MOTOR_RATED_V && MOTOR_UNLOCK_MAX_V <= MOTOR_SUPPLY_V,
               "unlock limit must be between the rated voltage and the supply");
 // PcbChassis: the measured supply (INA219 bus voltage = the DRV8833's VM)
@@ -78,7 +82,6 @@ static_assert(MOTOR_UNLOCK_MAX_V >= MOTOR_RATED_V && MOTOR_UNLOCK_MAX_V <= MOTOR
 constexpr float MOTOR_SUPPLY_FILTER_MS = 200.0f;
 constexpr float MOTOR_SUPPLY_MIN_V     = 5.5f;   // a 2S pack this low is flat (or it's a 5 V rail)
 constexpr float MOTOR_SUPPLY_MAX_V     = 9.0f;   // above a full 2S pack
-static_assert(MOTOR_SUPPLY_MIN_V > MOTOR_UNLOCK_MAX_V, "duty must stay below 100 % at the lowest supply");
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -103,13 +106,26 @@ constexpr uint8_t PIN_IR[IR_COUNT] = {9, 8, 7, 6, 5, 4, 2, 1};  // D8..D1, left 
 // the pin isn't driven).
 constexpr uint8_t PIN_IR_LED = BOARD == Board::PcbChassis ? 10 : 11;
 
-// Encoder connectors (PcbChassis only; the current N20 motors have none).
-// Not used by the firmware and never driven, so they stay plain inputs. The
-// encoders are powered from 5 V: check their outputs stay at 3.3 V first.
-constexpr uint8_t PIN_ENC_L_C1 = 13;
-constexpr uint8_t PIN_ENC_L_C2 = 14;
-constexpr uint8_t PIN_ENC_R_C1 = 12;
-constexpr uint8_t PIN_ENC_R_C2 = 11;
+// Wheel encoders (PcbChassis only): quadrature hall encoders on the N20
+// motors, read by the pulse counter hardware (encoders.h). Wiring as built by
+// the user (2026-11-24; differs from the schematic, which has L 13/14, R 12/11).
+// The encoder outputs must stay at 3.3 V: power the encoders from 3.3 V (or
+// divide their outputs) if they pull up to their supply.
+constexpr bool    ENCODERS_FITTED = BOARD == Board::PcbChassis;
+constexpr uint8_t PIN_ENC_L_C1 = 12;
+constexpr uint8_t PIN_ENC_L_C2 = 11;
+constexpr uint8_t PIN_ENC_R_C1 = 14;
+constexpr uint8_t PIN_ENC_R_C2 = 13;
+// MEASURE with the enctest env: turn each wheel one full turn forward by hand.
+// The count must go UP (else set the INVERT flag) and its size is the counts
+// per wheel turn. 0 = not measured yet: speeds then read 0.
+constexpr bool    ENC_L_INVERT = false;
+constexpr bool    ENC_R_INVERT = true;           // measured 2026-11-24: counted down going forward
+constexpr float   ENC_COUNTS_PER_REV = 300.0f;   // measured 2026-11-24: L +303, R ~-300 per turn
+constexpr float   WHEEL_DIAMETER_MM = 33.3f;
+constexpr uint32_t ENC_SPEED_WINDOW_MS = 20;    // speed = counts over this window
+constexpr int16_t  ENC_PCNT_LIMIT = 10000;      // hardware counter wraps here
+constexpr uint16_t ENC_GLITCH_FILTER = 100;     // ignore pulses shorter than 1.25 us
 
 // Line colour until one is chosen on the phone (saved after that). The race
 // track (Cytron) is a black line on white (false); true = a white line on a
@@ -193,17 +209,20 @@ constexpr float LOST_SIDE_MIN = 0.20f;
 // The robot then drives straight on (no corner brake) for gapMs (live slider
 // "Hill / gap", default GAP_STRAIGHT_MS) before searching like a lost line.
 constexpr float    GAP_STRAIGHT_MS    = 300.0f;
-// Downhill after a crest: gravity speeds the robot up beyond what the motor
-// voltage gives on the flat (no encoders to see it), so it reaches the next
-// corner too fast. When the line comes back after a crest/gap that lasted
-// at least DOWNHILL_MIN_GAP_MS (shorter = tape flicker, ignored), Auto drives
-// at DOWNHILL_SCALE x Auto speed for DOWNHILL_MS (lower voltage also lets the
-// motors hold it back). Not during the gap itself: the wheels are still on
-// the way up there and need full power to get over the top. Live sliders
-// "Downhill"; scale 1.0 = off.
-constexpr float    DOWNHILL_SCALE      = 0.60f;
-constexpr float    DOWNHILL_MS         = 1000.0f;
-constexpr uint32_t DOWNHILL_MIN_GAP_MS = 40;
+
+// Speed control (cruise; needs the encoders): Auto holds a target forward
+// speed (the average of both wheels, mm/s) instead of a fixed motor power, so
+// climbs, descents and a draining battery don't change the speed. (It
+// replaced v2's timed downhill slow-down after a crest.) A PI on the
+// base speed only: the steering (KP/KD) is added on top as before. Target 0
+// = off (fixed power, "Auto speed" slider). Live sliders "Speed control".
+constexpr float CRUISE_MMS        = 0.0f;
+constexpr float CRUISE_KP         = 1.0f;     // extra base per mm/s of error, x SPEED_AT_FULL_MMS
+constexpr float CRUISE_KI         = 4.0f;     // per second
+// Wheel speed at 100 % of the rated voltage, for the feed-forward. Estimate:
+// MEASURE (Manual, full stick straight ahead, read "Wheel speed" on the phone).
+constexpr float SPEED_AT_FULL_MMS = 1500.0f;
+constexpr float CRUISE_MIN_BASE   = -0.5f;    // most reverse the cruise may use (holding back downhill)
 constexpr uint32_t GAP_EDGE_RECENT_MS = 150;
 
 // No sensor sees the line for longer than this (plus gapMs after a gap) ->

@@ -82,7 +82,8 @@ size_t encodeSample(const TelemetrySample& s, const PowerStats& pw, uint8_t* f) 
     put32(f + 20, s.lastLapMs);
     put16(f + 24, s.loopMaxUs);
     put16(f + 26, s.periodMaxUs);
-    // 28..31 reserved for encoder speed, left as zero
+    put16(f + 28, (uint16_t)(int16_t)lroundf(constrain(s.speedLMms, -32000.0f, 32000.0f)));
+    put16(f + 30, (uint16_t)(int16_t)lroundf(constrain(s.speedRMms, -32000.0f, 32000.0f)));
     if (pw.present) {
         put16(f + 32, (uint16_t)lroundf(constrain(pw.busV, 0.0f, 65.0f) * 1000.0f));
         put16(f + 34, (int16_t)lroundf(constrain(pw.currentA, -32.0f, 32.0f) * 1000.0f));
@@ -135,22 +136,23 @@ void formatTuning(char* out, size_t n) {
     Tuning t = sharedTuning();
     snprintf(out, n,
              "\"autoSpeed\":%.3f,\"manualMax\":%.3f,\"kp\":%.3f,\"kd\":%.4f,\"trim\":%.3f,"
-             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"gapMs\":%.0f,\"downhill\":%.3f,\"downhillMs\":%.0f,\"save\":\"%s\"",
+             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"gapMs\":%.0f,\"cruise\":%.0f,\"cruiseKp\":%.2f,\"cruiseKi\":%.2f,\"save\":\"%s\"",
              t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, t.calSpeed,
-             t.smoothMs, t.gapMs, t.downhillScale, t.downhillMs, saveStatus());
+             t.smoothMs, t.gapMs, t.cruiseMms, t.cruiseKp, t.cruiseKi, saveStatus());
 }
 
 void sendHello(uint8_t client) {
-    char tune[288];
+    char tune[352];
     formatTuning(tune, sizeof tune);
-    char msg[448];
+    char msg[576];
     snprintf(msg, sizeof msg,
              "{\"type\":\"hello\",\"frame\":%u,\"ir\":%u,\"hz\":%lu,\"ctrlUs\":%lu,"
-             "\"motorV\":%.2f,\"vLimit\":%.2f,\"vMax\":%.2f,\"inaBattery\":%s,\"laps\":%s,"
+             "\"motorV\":%.2f,\"vLimit\":%.2f,\"vMax\":%.2f,\"inaBattery\":%s,\"enc\":%s,\"laps\":%s,"
              "\"cal\":\"%s\",\"white\":%s,%s}",
              FRAME_VERSION, IR_COUNT, (unsigned long)TELEMETRY_HZ,
              (unsigned long)CONTROL_PERIOD_US, MOTOR_RATED_V, motorsVoltageLimit(), MOTOR_UNLOCK_MAX_V,
-             INA219_ON_BATTERY ? "true" : "false", LAP_TIMING_ENABLED ? "true" : "false", calStatus,
+             INA219_ON_BATTERY ? "true" : "false", ENCODERS_FITTED && ENC_COUNTS_PER_REV > 0.0f ? "true" : "false",
+             LAP_TIMING_ENABLED ? "true" : "false", calStatus,
              sensorsLineWhite() ? "true" : "false", tune);
     ws.sendTXT(client, msg);
 }
@@ -180,9 +182,9 @@ void serviceCalibration() {
 
 // Tell every phone the current tuning, so all sliders agree.
 void broadcastTuning() {
-    char tune[288];
+    char tune[352];
     formatTuning(tune, sizeof tune);
-    char msg[320];
+    char msg[384];
     snprintf(msg, sizeof msg, "{\"type\":\"tuning\",%s}", tune);
     ws.broadcastTXT(msg);
 }
@@ -224,7 +226,7 @@ void onCommand(const uint8_t* p, size_t len) {
         Tuning t = sharedTuning();
         t = {getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17),
              t.cornerBrakeMs, t.pivotSpeed, t.calSpeed, t.smoothMs, t.gapMs,
-             t.downhillScale, t.downhillMs};
+             t.cruiseMms, t.cruiseKp, t.cruiseKi};
         if (len >= 29) {
             t.cornerBrakeMs = getF32(p + 21);
             t.pivotSpeed = getF32(p + 25);
@@ -232,9 +234,10 @@ void onCommand(const uint8_t* p, size_t len) {
         if (len >= 33) t.calSpeed = getF32(p + 29);
         if (len >= 37) t.smoothMs = getF32(p + 33);
         if (len >= 41) t.gapMs = getF32(p + 37);
-        if (len >= 49) {
-            t.downhillScale = getF32(p + 41);
-            t.downhillMs = getF32(p + 45);
+        if (len >= 53) {
+            t.cruiseMms = getF32(p + 41);
+            t.cruiseKp = getF32(p + 45);
+            t.cruiseKi = getF32(p + 49);
         }
         sharedSetTuning(t);
         saveState = SaveState::Pending;

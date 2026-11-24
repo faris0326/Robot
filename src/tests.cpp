@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "control.h"
+#include "encoders.h"
 #include "motors.h"
 #include "sensors.h"
 
@@ -100,4 +101,28 @@ void steerTestLoop() {
                       motorsLeftDuty(), motorsRightDuty(), stateLabel());
     }
     delay(10);
+}
+
+void encoderTestBegin() {
+    Serial.println("\nEncoder test. Motors braked.");
+    Serial.println("Turn each wheel ONE full turn FORWARD by hand (the way it turns when the robot drives forward).");
+    Serial.println("Its count must go UP (else set ENC_x_INVERT); the size of the change is ENC_COUNTS_PER_REV.");
+    if (!ENCODERS_FITTED) Serial.println("BOARD has no encoders: set BOARD = Board::PcbChassis.");
+}
+
+void encoderTestLoop() {
+    static uint32_t nextMs = 0;
+    encodersUpdate();
+    if ((int32_t)(millis() - nextMs) >= 0) {
+        nextMs = millis() + 200;
+        int32_t l = encoderCount(false), r = encoderCount(true);
+        Serial.printf("L %+7ld   R %+7ld", (long)l, (long)r);
+        if (ENC_COUNTS_PER_REV > 0.0f) {
+            Serial.printf("   turns L %+.2f R %+.2f   speed L %+5.0f R %+5.0f mm/s",
+                          l / ENC_COUNTS_PER_REV, r / ENC_COUNTS_PER_REV,
+                          encoderSpeedMms(false), encoderSpeedMms(true));
+        }
+        Serial.println();
+    }
+    delay(1);
 }

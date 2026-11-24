@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "control.h"
+#include "encoders.h"
 #include "control_task.h"
 #include "motors.h"
 #include "power.h"
@@ -21,6 +22,7 @@
 void setup() {
     Serial.begin(115200);
     motorsBegin();  // brakes immediately so outputs are defined at boot
+    encodersBegin();
     sensorsBegin();
     controlBegin();
 
@@ -35,6 +37,8 @@ void setup() {
     motorTest();
 #elif defined(SENSOR_TEST)
     Serial.println("\nSensor test. Motors braked.");
+#elif defined(ENCODER_TEST)
+    encoderTestBegin();
 #elif defined(STEER_TEST)
     Serial.printf("\nSteer test. LIFT THE WHEELS. Starting in %lu ms\n",
                   (unsigned long)START_DELAY_MS);
@@ -66,6 +70,8 @@ void loop() {
     delay(1000);
 #elif defined(SENSOR_TEST)
     sensorTestLoop();
+#elif defined(ENCODER_TEST)
+    encoderTestLoop();
 #elif defined(STEER_TEST)
     steerTestLoop();
 #else

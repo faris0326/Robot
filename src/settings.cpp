@@ -10,7 +10,7 @@ namespace {
 
 constexpr char     NVS_NAMESPACE[] = "tuning";
 constexpr char     NVS_KEY[] = "t";
-constexpr uint16_t RECORD_VERSION = 6;  // bump when Tuning changes shape (skip 7, see below)
+constexpr uint16_t RECORD_VERSION = 9;  // bump when Tuning changes shape
 
 struct Record {
     uint16_t version;
@@ -18,45 +18,62 @@ struct Record {
     Tuning   tuning;
 };
 
-// Older records hold only the first Tuning fields: version 1 the first five
-// (no corner brake / spin), version 2 the first seven (no calibrate speed),
-// version 3 the first eight (no smoothing), version 4 the first nine (no gap),
-// version 5 the first ten (no downhill).
-constexpr size_t oldFields(uint16_t version) {
-    return version == 1 ? 5 : version == 2 ? 7 : version == 3 ? 8 : version == 4 ? 9 : version == 5 ? 10 : 0;
-}
+// Every Tuning field is a float. The first COMMON (auto speed .. gap ms) are
+// the same in every saved version; speed control (3) follows them since v9.
+constexpr size_t COMMON = 10;
+constexpr size_t CRUISE_FIELDS = 3;
+static_assert(offsetof(Tuning, cruiseMms) == COMMON * sizeof(float), "speed control right after the common fields");
+static_assert(sizeof(Tuning) == (COMMON + CRUISE_FIELDS) * sizeof(float), "Tuning is floats only");
 
-// Version 7 briefly added two long-straight fields after these twelve (later
-// removed): read its first twelve. Its hash covered those two defaults too.
-constexpr size_t V7_FIELDS = 14;
-constexpr float  V7_EXTRA_DEFAULTS[2] = {0.70f, 1000.0f};
-static_assert(offsetof(Tuning, cornerBrakeMs) == 5 * sizeof(float), "version 1 = first five fields");
-static_assert(offsetof(Tuning, calSpeed) == 7 * sizeof(float), "version 2 = first seven fields");
-static_assert(offsetof(Tuning, smoothMs) == 8 * sizeof(float), "version 3 = first eight fields");
-static_assert(offsetof(Tuning, gapMs) == 9 * sizeof(float), "version 4 = first nine fields");
-static_assert(offsetof(Tuning, downhillScale) == 10 * sizeof(float), "version 5 = first ten fields");
-static_assert(sizeof(Tuning) == 12 * sizeof(float), "version 7 = these twelve fields + two");
+// Older versions, read so saved sliders survive updates:
+//   1..5   the first 5 / 7 / 8 / 9 / 10 common fields
+//   6      common + downhill speed, downhill ms (removed in v9: speed control replaced it)
+//   7      common + downhill + two long-straight fields (removed)
+//   8      common + downhill + speed control
+// Each record's hash covered the config.h defaults of its own fields.
+constexpr float  OLD_DOWNHILL[2] = {0.60f, 1000.0f};
+constexpr float  OLD_STRAIGHT[2] = {0.70f, 1000.0f};
+constexpr size_t MAX_OLD_FIELDS = 15;
 struct OldRecord {
     uint16_t version;
     uint32_t defaultsHash;
-    float    fields[V7_FIELDS];
+    float    fields[MAX_OLD_FIELDS];
 };
 
-// FNV-1a over the first `bytes` of the default values: changes whenever the
-// config.h defaults change.
-uint32_t defaultsHash(size_t bytes = sizeof(Tuning)) {
-    Tuning d = settingsDefaults();
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(&d);
+uint32_t fnv(const void* data, size_t bytes) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < bytes; i++) h = (h ^ p[i]) * 16777619u;
     return h;
+}
+
+// An old version's field count, its defaults (for the hash) and where its
+// speed-control fields sit (-1 = none). False for an unknown version.
+bool oldLayout(uint16_t version, float* defaults, size_t& count, int& cruiseAt) {
+    static const size_t COUNT[] = {0, 5, 7, 8, 9, 10, 12, 14, 15};
+    if (version < 1 || version > 8) return false;
+    count = COUNT[version];
+    cruiseAt = version == 8 ? COMMON + 2 : -1;
+    Tuning d = settingsDefaults();
+    const float* now = reinterpret_cast<const float*>(&d);
+    memcpy(defaults, now, min(count, COMMON) * sizeof(float));
+    if (version >= 6) memcpy(defaults + COMMON, OLD_DOWNHILL, sizeof OLD_DOWNHILL);
+    if (version == 7) memcpy(defaults + COMMON + 2, OLD_STRAIGHT, sizeof OLD_STRAIGHT);
+    if (version == 8) memcpy(defaults + COMMON + 2, now + COMMON, CRUISE_FIELDS * sizeof(float));
+    return true;
+}
+
+// FNV-1a over the default values: changes whenever the config.h defaults change.
+uint32_t defaultsHash() {
+    Tuning d = settingsDefaults();
+    return fnv(&d, sizeof d);
 }
 
 }  // namespace
 
 Tuning settingsDefaults() {
     return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM, CORNER_BRAKE_MS, PIVOT_SPEED, CAL_SPIN_SPEED,
-            POSITION_SMOOTH_MS, GAP_STRAIGHT_MS, DOWNHILL_SCALE, DOWNHILL_MS};
+            POSITION_SMOOTH_MS, GAP_STRAIGHT_MS, CRUISE_MMS, CRUISE_KP, CRUISE_KI};
 }
 
 bool settingsLoad(Tuning& out) {
@@ -78,28 +95,19 @@ bool settingsLoad(Tuning& out) {
         out = r.now.tuning;
         return true;
     }
-    // Saved by older firmware with fewer settings: keep the saved ones, the
-    // newer ones start from config.h.
-    if (r.old.version == 7 && len == offsetof(OldRecord, fields) + V7_FIELDS * sizeof(float)) {
-        float d[V7_FIELDS];
-        Tuning defaults = settingsDefaults();
-        memcpy(d, &defaults, sizeof defaults);
-        memcpy(d + sizeof defaults / sizeof(float), V7_EXTRA_DEFAULTS, sizeof V7_EXTRA_DEFAULTS);
-        uint32_t hash = 2166136261u;
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(d);
-        for (size_t i = 0; i < sizeof d; i++) hash = (hash ^ p[i]) * 16777619u;
-        if (r.old.defaultsHash != hash) return false;
-        memcpy(&out, r.old.fields, sizeof out);
-        return true;
-    }
-
-    size_t bytes = oldFields(r.old.version) * sizeof(float);
-    if (bytes && len == offsetof(OldRecord, fields) + bytes && r.old.defaultsHash == defaultsHash(bytes)) {
-        out = settingsDefaults();
-        memcpy(&out, r.old.fields, bytes);
-        return true;
-    }
-    return false;
+    // Saved by older firmware: keep the fields this version still has, the
+    // rest start from config.h.
+    float defaults[MAX_OLD_FIELDS];
+    size_t count;
+    int cruiseAt;
+    if (!oldLayout(r.old.version, defaults, count, cruiseAt)) return false;
+    if (len != offsetof(OldRecord, fields) + count * sizeof(float)) return false;
+    if (r.old.defaultsHash != fnv(defaults, count * sizeof(float))) return false;
+    out = settingsDefaults();
+    float* to = reinterpret_cast<float*>(&out);
+    memcpy(to, r.old.fields, min(count, COMMON) * sizeof(float));
+    if (cruiseAt >= 0) memcpy(to + COMMON, r.old.fields + cruiseAt, CRUISE_FIELDS * sizeof(float));
+    return true;
 }
 
 bool settingsSave(const Tuning& t) {
