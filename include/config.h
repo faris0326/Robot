@@ -289,7 +289,11 @@ constexpr float    LAP_LOCKOUT_FRACTION  = 0.7f;      // then: this x the time b
 // and open http://192.168.4.1
 // ---------------------------------------------------------------------------
 constexpr char     WIFI_SSID[]      = "Faris's_ESP";
-constexpr char     WIFI_PASS[]      = "12345678";  // 8..63 characters, or "" for an open network
+// The password comes from secrets.ini (not committed): see platformio.ini.
+#ifndef WIFI_PASSWORD
+#error "WIFI_PASSWORD missing: copy secrets.example.ini to secrets.ini and set the passwords"
+#endif
+constexpr char     WIFI_PASS[]      = WIFI_PASSWORD;  // 8..63 characters, or "" for an open network
 constexpr uint8_t  WIFI_CHANNEL     = 6;
 constexpr uint8_t  WIFI_MAX_CLIENTS = 4;   // phones + a Mac for OTA; a device that just left can hold a slot for minutes
 constexpr uint16_t WS_PORT          = 81;  // WebSocket; the page is on port 80

@@ -7,7 +7,7 @@
 #include "shared.h"
 
 #ifndef OTA_PASSWORD
-#error "OTA_PASSWORD is set in platformio.ini [ota]"
+#error "OTA_PASSWORD missing: copy secrets.example.ini to secrets.ini and set the passwords"
 #endif
 
 void otaBegin() {
