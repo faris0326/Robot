@@ -23,4 +23,8 @@ bool settingsSaveCal(const SensorCal& c);
 
 // Line colour chosen on the phone (true = white line). False if never saved.
 bool settingsLoadLineWhite(bool& white);
+
+// Track map (turn ratio per segment, see track_map.h). Not while driving.
+bool settingsSaveMap(const uint8_t* turn, uint16_t count);
+bool settingsLoadMap(uint8_t* turn, uint16_t& count);  // turn must hold MAP_MAX_SEGMENTS
 bool settingsSaveLineWhite(bool white);

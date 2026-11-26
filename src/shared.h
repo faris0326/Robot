@@ -33,6 +33,8 @@ struct Tuning {
     float cruiseMms;      // speed-control target mm/s, 0 = off      (CRUISE_MMS)
     float cruiseKp;       //                                          (CRUISE_KP)
     float cruiseKi;       //                                          (CRUISE_KI)
+    float raceTopMms;     // Race: fastest planned speed, mm/s        (RACE_TOP_MMS)
+    float raceGrip;       // Race: braking/cornering, m/s^2           (RACE_GRIP)
 };
 
 struct TelemetrySample {
@@ -74,3 +76,14 @@ Tuning sharedTuning();
 // with every finished calibration (0 = none yet).
 void     sharedCalibrationDone(bool ok, int8_t badSensor);
 uint32_t sharedCalibrationResult(bool& ok, int8_t& badSensor);
+
+// Line-loss record, control -> telemetry (for the phone). Returns a counter
+// that goes up with every loss (0 = none yet).
+struct LossRecord {
+    uint16_t bits[LOSS_HISTORY];  // oldest first
+    uint8_t  why;                 // SideReason
+    int8_t   side;                // -1 left, +1 right, 0 none
+    uint8_t  state;               // LineState: 1 gap, 2 lost
+};
+void     sharedSetLoss(const LossRecord& r);
+uint32_t sharedLoss(LossRecord& r);

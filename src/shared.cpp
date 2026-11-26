@@ -82,6 +82,8 @@ void sharedSetTuning(const Tuning& in) {
     t.cruiseMms = safe(in.cruiseMms, 0.0f, 4000.0f);
     t.cruiseKp = safe(in.cruiseKp, 0.0f, 10.0f);
     t.cruiseKi = safe(in.cruiseKi, 0.0f, 50.0f);
+    t.raceTopMms = safe(in.raceTopMms, MAP_MIN_MMS, 4000.0f);
+    t.raceGrip = safe(in.raceGrip, 0.5f, 10.0f);
     portENTER_CRITICAL(&cmdMux);
     tuning = t;
     portEXIT_CRITICAL(&cmdMux);
@@ -114,5 +116,26 @@ uint32_t sharedCalibrationResult(bool& ok, int8_t& badSensor) {
     ok = calOk;
     badSensor = calBad;
     portEXIT_CRITICAL(&cmdMux);
+    return seq;
+}
+
+namespace {
+portMUX_TYPE lossMux = portMUX_INITIALIZER_UNLOCKED;
+LossRecord   loss = {};
+uint32_t     lossSeq = 0;
+}  // namespace
+
+void sharedSetLoss(const LossRecord& r) {
+    portENTER_CRITICAL(&lossMux);
+    loss = r;
+    lossSeq++;
+    portEXIT_CRITICAL(&lossMux);
+}
+
+uint32_t sharedLoss(LossRecord& r) {
+    portENTER_CRITICAL(&lossMux);
+    r = loss;
+    uint32_t seq = lossSeq;
+    portEXIT_CRITICAL(&lossMux);
     return seq;
 }

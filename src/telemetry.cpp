@@ -9,6 +9,7 @@
 #include "control.h"
 #include "motors.h"
 #include "ota.h"
+#include "track_map.h"
 #include "settings.h"
 #include "shared.h"
 #include "power.h"
@@ -136,24 +137,25 @@ void formatTuning(char* out, size_t n) {
     Tuning t = sharedTuning();
     snprintf(out, n,
              "\"autoSpeed\":%.3f,\"manualMax\":%.3f,\"kp\":%.3f,\"kd\":%.4f,\"trim\":%.3f,"
-             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"gapMs\":%.0f,\"cruise\":%.0f,\"cruiseKp\":%.2f,\"cruiseKi\":%.2f,\"save\":\"%s\"",
+             "\"brakeMs\":%.0f,\"pivot\":%.3f,\"calSpeed\":%.3f,\"smoothMs\":%.0f,\"gapMs\":%.0f,\"cruise\":%.0f,\"cruiseKp\":%.2f,\"cruiseKi\":%.2f,\"raceTop\":%.0f,\"raceGrip\":%.2f,\"save\":\"%s\"",
              t.autoSpeed, t.manualMax, t.kp, t.kd, t.trim, t.cornerBrakeMs, t.pivotSpeed, t.calSpeed,
-             t.smoothMs, t.gapMs, t.cruiseMms, t.cruiseKp, t.cruiseKi, saveStatus());
+             t.smoothMs, t.gapMs, t.cruiseMms, t.cruiseKp, t.cruiseKi, t.raceTopMms, t.raceGrip,
+             saveStatus());
 }
 
 void sendHello(uint8_t client) {
     char tune[352];
     formatTuning(tune, sizeof tune);
-    char msg[576];
+    char msg[640];
     snprintf(msg, sizeof msg,
              "{\"type\":\"hello\",\"frame\":%u,\"ir\":%u,\"hz\":%lu,\"ctrlUs\":%lu,"
              "\"motorV\":%.2f,\"vLimit\":%.2f,\"vMax\":%.2f,\"inaBattery\":%s,\"enc\":%s,\"laps\":%s,"
-             "\"cal\":\"%s\",\"white\":%s,%s}",
+             "\"cal\":\"%s\",\"white\":%s,\"map\":{\"n\":%u,\"c\":%u,\"seg\":%.0f},%s}",
              FRAME_VERSION, IR_COUNT, (unsigned long)TELEMETRY_HZ,
              (unsigned long)CONTROL_PERIOD_US, MOTOR_RATED_V, motorsVoltageLimit(), MOTOR_UNLOCK_MAX_V,
              INA219_ON_BATTERY ? "true" : "false", ENCODERS_FITTED && ENC_COUNTS_PER_REV > 0.0f ? "true" : "false",
              LAP_TIMING_ENABLED ? "true" : "false", calStatus,
-             sensorsLineWhite() ? "true" : "false", tune);
+             sensorsLineWhite() ? "true" : "false", mapSegments(), mapCorners(), MAP_SEG_MM, tune);
     ws.sendTXT(client, msg);
 }
 
@@ -189,6 +191,47 @@ void broadcastTuning() {
     ws.broadcastTXT(msg);
 }
 
+bool autoDriving();
+
+// The line was lost: send what the sensors saw just before, and which side
+// the robot chose and why.
+uint32_t lossSeen = 0;
+void serviceLoss() {
+    LossRecord r;
+    uint32_t seq = sharedLoss(r);
+    if (seq == lossSeen) return;
+    lossSeen = seq;
+    static const char* WHY[] = {"none", "left outer sensor", "right outer sensor", "wide branch", "position"};
+    char msg[512];
+    int n = snprintf(msg, sizeof msg, "{\"type\":\"loss\",\"state\":\"%s\",\"side\":%d,\"why\":\"%s\",\"bits\":[",
+                     r.state == 1 ? "gap" : "lost", r.side, WHY[r.why < 5 ? r.why : 0]);
+    for (uint8_t i = 0; i < LOSS_HISTORY && n < (int)sizeof msg - 20; i++) {
+        n += snprintf(msg + n, sizeof msg - n, "%s%u", i ? "," : "", r.bits[i]);
+    }
+    snprintf(msg + n, sizeof msg - n, "]}");
+    ws.broadcastTXT(msg);
+}
+
+// A Learn run ended with a map: save it (not while driving) and tell the phones.
+void serviceMap() {
+    if (!mapSavePending() || autoDriving()) return;
+    uint16_t n;
+    const uint8_t* turn = mapTurnData(n);
+    bool kept = mapLastLearnKept();
+    bool saved = kept && settingsSaveMap(turn, n);
+    mapSaveDone();
+    Serial.printf("Map: Learn run %u segments (%.2f m), %s\n", mapLastLearnSegments(),
+                  mapLastLearnSegments() * MAP_SEG_MM / 1000.0f,
+                  !kept ? "too short, not kept" : saved ? "saved" : "kept but NOT saved");
+    char msg[160];
+    snprintf(msg, sizeof msg,
+             "{\"type\":\"map\",\"n\":%u,\"c\":%u,\"seg\":%.0f,\"saved\":%s,\"learned\":%u,\"kept\":%s,\"min\":%u,"
+             "\"mm\":%.0f,\"ticks\":%lu}",
+             n, mapCorners(), MAP_SEG_MM, saved ? "true" : "false", mapLastLearnSegments(),
+             kept ? "true" : "false", MAP_MIN_SEGMENTS, mapLearnDistanceMm(), (unsigned long)mapLearnTicks());
+    ws.broadcastTXT(msg);
+}
+
 void broadcastStats() {
     SysStats st;
     sysmonSample(st);
@@ -199,13 +242,14 @@ void broadcastStats() {
              "\"heap\":%lu,\"heapMin\":%lu,\"psram\":%lu,\"temp\":%.1f,"
              "\"rssi\":%d,\"clients\":%u,\"uptime\":%lu,\"mhz\":%u,"
              "\"ina\":%s,\"battPct\":%.3f,\"battLeftS\":%lu,\"battUsedWh\":%.3f,"
-             "\"battUsableWh\":%.2f,\"avgW\":%.3f,\"battLow\":%s,\"battFromV\":%s,\"battRestV\":%.2f}",
+             "\"battUsableWh\":%.2f,\"avgW\":%.3f,\"battLow\":%s,\"battFromV\":%s,\"battRestV\":%.2f,"
+             "\"learnMm\":%.0f,\"learnTicks\":%lu}",
              st.cpuLoad[0], st.cpuLoad[1], st.controlLoad,
              (unsigned long)st.heapFree, (unsigned long)st.heapMin, (unsigned long)st.psramFree,
              st.tempC, st.rssi, st.clients, (unsigned long)st.uptimeS, st.cpuMhz,
              pw.present ? "true" : "false", pw.percent, (unsigned long)pw.timeLeftS, pw.usedWh,
              pw.usableWh, pw.avgPowerW, pw.low ? "true" : "false", pw.fromVoltage ? "true" : "false",
-             pw.restV);
+             pw.restV, mapLearnDistanceMm(), (unsigned long)mapLearnTicks());
     ws.broadcastTXT(msg);
 }
 
@@ -218,7 +262,7 @@ float getF32(const uint8_t* p) {  // little-endian IEEE 754, same as the ESP32
 }
 
 void onCommand(const uint8_t* p, size_t len) {
-    if (len >= 2 && p[0] == CMD_MODE && p[1] <= (uint8_t)DriveMode::Hold) {
+    if (len >= 2 && p[0] == CMD_MODE && p[1] <= (uint8_t)DriveMode::Race) {
         sharedSetMode((DriveMode)p[1]);
     } else if (len >= 5 && p[0] == CMD_DRIVE) {
         sharedSetDrive(get16(p + 1) / 10000.0f, get16(p + 3) / 10000.0f);
@@ -226,7 +270,7 @@ void onCommand(const uint8_t* p, size_t len) {
         Tuning t = sharedTuning();
         t = {getF32(p + 1), getF32(p + 5), getF32(p + 9), getF32(p + 13), getF32(p + 17),
              t.cornerBrakeMs, t.pivotSpeed, t.calSpeed, t.smoothMs, t.gapMs,
-             t.cruiseMms, t.cruiseKp, t.cruiseKi};
+             t.cruiseMms, t.cruiseKp, t.cruiseKi, t.raceTopMms, t.raceGrip};
         if (len >= 29) {
             t.cornerBrakeMs = getF32(p + 21);
             t.pivotSpeed = getF32(p + 25);
@@ -238,6 +282,10 @@ void onCommand(const uint8_t* p, size_t len) {
             t.cruiseMms = getF32(p + 41);
             t.cruiseKp = getF32(p + 45);
             t.cruiseKi = getF32(p + 49);
+        }
+        if (len >= 61) {
+            t.raceTopMms = getF32(p + 53);
+            t.raceGrip = getF32(p + 57);
         }
         sharedSetTuning(t);
         saveState = SaveState::Pending;
@@ -271,7 +319,8 @@ void onCommand(const uint8_t* p, size_t len) {
 // Center test, which steers the same way) drives.
 bool autoDriving() {
     TelemetrySample s = sharedLatest();
-    return (s.mode == DriveMode::Auto || s.mode == DriveMode::Hold) && s.running &&
+    return (s.mode == DriveMode::Auto || s.mode == DriveMode::Hold || s.mode == DriveMode::Learn ||
+            s.mode == DriveMode::Race) && s.running &&
            (s.dutyLeft != 0.0f || s.dutyRight != 0.0f);
 }
 
@@ -353,6 +402,8 @@ void netTask(void*) {
         forwardLapEvents();
         serviceSave();
         serviceCalibration();
+        serviceMap();
+        serviceLoss();
         if (lineSavePending && !autoDriving()) {
             settingsSaveLineWhite(sensorsLineWhite());
             lineSavePending = false;

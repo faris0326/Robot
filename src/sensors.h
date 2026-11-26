@@ -46,6 +46,11 @@ int8_t    sensorsLastSide();  // -1 / +1: side the line was last clearly seen on
 // Two lines, or a line at least CROSSING_MIN_SENSORS wide: readPosition()
 // returns the position from just before (holds the heading over a crossing).
 bool      sensorsCrossing();
+
+// Why lastSide was last set (for the phone's line-loss record).
+enum class SideReason : uint8_t { None, LeftEdge, RightEdge, Branch, Position };
+// The last LOSS_HISTORY sensor-bit samples (oldest first), every LOSS_SAMPLE_MS.
+void sensorsLossRecord(uint16_t* bits, SideReason& why, int8_t& side);
 // -1 / +1 when a sharp corner to that side is under the array (a wide line,
 // at least CORNER_MIN_SENSORS, reaching one outer sensor), else 0.
 int8_t    sensorsCorner();

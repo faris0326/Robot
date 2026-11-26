@@ -76,7 +76,7 @@ li .d { color: var(--muted); font-size: 13px; }
 li.best, li.best .d { color: var(--ok); }
 .empty { color: var(--muted); font-size: 13px; margin-top: 6px; }
 [hidden] { display: none !important; }
-.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .seg button {
   font: inherit; font-weight: 600; padding: 12px 0; border-radius: 10px; cursor: pointer;
   border: 1px solid var(--line); background: var(--bg); color: var(--text);
@@ -127,8 +127,31 @@ input[type=range] { width: 100%; height: 32px; margin: 4px 0 0; accent-color: va
     <button data-mode="0">Auto</button>
     <button data-mode="1">Manual</button>
     <button data-mode="4">Center test</button>
+    <button data-mode="5">Learn</button>
+    <button data-mode="6">Race</button>
     <button data-mode="2" class="stop">Stop</button>
   </div>
+</section>
+
+<section class="card" id="lossCard" hidden>
+  <div class="head">
+    <div class="label">Last line loss</div>
+    <span class="save" id="lossState"></span>
+  </div>
+  <div class="hint">Sensors left → right just before the line was lost, oldest at the top (every 5 ms).
+    <b>#</b> = sees the line.</div>
+  <pre class="mono" id="lossBits" style="margin:8px 0 0;font-size:13px;line-height:1.25"></pre>
+</section>
+
+<section class="card">
+  <div class="head">
+    <div class="label">Track map</div>
+    <span class="save" id="mapState">—</span>
+  </div>
+  <div class="hint"><b>Learn:</b> put the robot at the start and tap Learn. It follows the line with your
+    Auto settings and saves the map at the end of the track (or when you tap Stop).
+    <b>Race:</b> put it back at the same start and tap Race: fast on straights, slowing down before
+    curves and corners. Needs the encoders.</div>
 </section>
 
 <section class="card" id="holdCard" hidden>
@@ -307,7 +330,38 @@ function onHello(h) {
   encodersOn = !!h.enc;
   if (h.cal) showCal(h.cal === "saved" ? "saved" : "default");
   if (h.white !== undefined) showLineColour(h.white);
+  if (h.map) showMap(h.map);
   showTuning(h);
+}
+
+// ---- Line-loss record (why the robot turned the way it did) ---------------
+function showLoss(m) {
+  $("lossCard").hidden = false;
+  const turn = m.side < 0 ? "turned left" : m.side > 0 ? "turned right" : "no side known";
+  setText("lossState", `${m.state === "gap" ? "Gap" : "Lost"} → ${turn} · chosen by: ${m.why}`);
+  $("lossBits").textContent = m.bits.map((b) => {
+    let row = "";
+    for (let i = 0; i < irCount; i++) row += (b >> i) & 1 ? "#" : ".";
+    return row;
+  }).join("\n");
+}
+
+// ---- Track map -----------------------------------------------------------
+function showMap(m) {
+  const el = $("mapState");
+  const seg = m.seg || 25;
+  // A Learn run that was too short (or recorded nothing) keeps any older map.
+  if (m.kept === false) {
+    const got = (m.learned * seg / 1000).toFixed(2), need = ((m.min || 20) * seg / 1000).toFixed(1);
+    el.textContent = m.learned ? `Learn too short: ${got} m (needs ${need} m)`
+      : `Learn recorded nothing (recorder ran ${m.ticks} times, ${Math.round(m.mm || 0)} mm)`;
+    el.className = "save error";
+    return;
+  }
+  if (!m.n) { el.textContent = "No map yet"; el.className = "save"; return; }
+  const metres = (m.n * (m.seg || 25) / 1000).toFixed(1);
+  el.textContent = `${metres} m · ${m.c} corner${m.c === 1 ? "" : "s"}${m.saved === false ? " · not saved" : ""}`;
+  el.className = `save ${m.saved === false ? "error" : "saved"}`;
 }
 
 // ---- Line colour ---------------------------------------------------------
@@ -425,6 +479,8 @@ function connect() {
         else if (m.type === "tuning") showTuning(m);
         else if (m.type === "cal") onCal(m);
         else if (m.type === "line") showLineColour(m.white);
+        else if (m.type === "map") showMap(m);
+        else if (m.type === "loss") showLoss(m);
         else if (m.type === "vlimit") showVoltLimit(m.v);
         else if (m.type === "stats") onStats(m);
       } catch (_) {}
@@ -614,6 +670,11 @@ $("battReset").addEventListener("click", () => {
 
 function onStats(m) {
   onBattery(m);
+  // While Learn runs: how far it has recorded, and that the recorder is running.
+  if (latest && latest.mode === 5 && m.learnTicks !== undefined) {
+    setText("mapState", `Learning… ${(m.learnMm / 1000).toFixed(2)} m · recorder ran ${m.learnTicks}×`);
+    $("mapState").className = "save waiting";
+  }
   setBar("bCpu0", m.cpu0);
   setBar("bCpu1", m.cpu1);
   setText("sCpu0", pct(m.cpu0));
@@ -630,7 +691,7 @@ function onStats(m) {
 // ---- Tuning sliders ------------------------------------------------------
 // Order matches the 0x12 message: auto speed, manual max, kp, kd, trim,
 // corner brake ms, spin speed, calibrate spin speed, smoothing ms, gap ms,
-// speed-control target mm/s, KP, KI.
+// speed-control target mm/s, KP, KI, race top speed mm/s, race grip m/s^2.
 // Slider values are in display units; scale converts to the robot's value.
 const TUNE = [
   { key: "autoSpeed", cfg: "BASE_SPEED", label: "Auto speed", min: 0, max: 100, step: 1, scale: 100,
@@ -659,6 +720,10 @@ const TUNE = [
     fmt: (v) => v.toFixed(1) },
   { key: "cruiseKi", cfg: "CRUISE_KI", label: "Speed control · KI", min: 0, max: 20, step: 0.5, scale: 1,
     fmt: (v) => v.toFixed(1) },
+  { key: "raceTop", cfg: "RACE_TOP_MMS", label: "Race · top speed", min: 250, max: 2500, step: 50, scale: 1,
+    dp: 0, fmt: (v) => `${v} mm/s` },
+  { key: "raceGrip", cfg: "RACE_GRIP", label: "Race · grip (braking, curves)", min: 0.5, max: 8, step: 0.25, scale: 1,
+    fmt: (v) => `${v.toFixed(2)} m/s²` },
 ];
 let sliderBusy = false;   // finger on a slider: don't overwrite it from the robot
 let tuneSentAt = 0, tuneTimer = null;
@@ -932,11 +997,11 @@ function tick(now) {
 // Simulates the robot side, including modes, manual mixing and the dead-man timeout.
 function startDemo() {
   connected = true;
-  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0, brakeMs: 40, pivot: 0.6, calSpeed: 1.0, smoothMs: 4, gapMs: 300, cruise: 0, cruiseKp: 1.0, cruiseKi: 4.0 };
+  const DEFAULTS = { autoSpeed: 1.0, manualMax: 0.6, kp: 0.4, kd: 0.0, trim: 0.0, brakeMs: 40, pivot: 0.6, calSpeed: 1.0, smoothMs: 4, gapMs: 300, cruise: 0, cruiseKp: 1.0, cruiseKi: 4.0, raceTop: 1000, raceGrip: 2.0 };
   const tu = { ...DEFAULTS, save: "defaults" };
   let changedT = 0;
   const N = 8;
-  onHello({ type: "hello", ir: N, laps: false, motorV: 6.0, vLimit: 6.0, vMax: 8.4, cal: "default", white: true, ...tu });
+  onHello({ type: "hello", ir: N, laps: false, motorV: 6.0, vLimit: 6.0, vMax: 8.4, cal: "default", white: true, map: { n: 0, c: 0, seg: 25 }, ...tu });
   const t0 = performance.now();
   const TIMEOUT_MS = 300, CAL_MS = 2400;
   let mode = 2, thr = 0, steer = 0, driveT = -1e9, prevPos = 0, calT = 0;   // boots in Stop, like the robot
@@ -989,7 +1054,7 @@ function startDemo() {
     const pos = Math.max(-1, Math.min(1, 0.7 * Math.sin(t / 900) + 0.15 * Math.sin(t / 130)));
     let l = 0, r = 0;
     const dpos = (pos - prevPos) / 0.025; prevPos = pos;
-    if (t > 3000 && mode === 0) {
+    if (t > 3000 && (mode === 0 || mode === 5 || mode === 6)) {
       const corr = tu.kp * pos + tu.kd * dpos;
       l = tu.autoSpeed + corr; r = tu.autoSpeed - corr;
       const over = Math.max(l, r) - 1; if (over > 0) { l -= over; r -= over; }

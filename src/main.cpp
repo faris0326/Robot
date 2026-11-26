@@ -10,6 +10,7 @@
 #include "config.h"
 #include "control.h"
 #include "encoders.h"
+#include "track_map.h"
 #include "control_task.h"
 #include "motors.h"
 #include "power.h"
@@ -32,6 +33,9 @@ void setup() {
     Serial.printf("\nSensor calibration: %s\n", calSaved ? "from flash" : "defaults (not calibrated yet)");
     bool white;
     if (settingsLoadLineWhite(white)) sensorsSetLineWhite(white);
+    static uint8_t mapTurn[MAP_MAX_SEGMENTS];
+    uint16_t mapCount = 0;
+    if (settingsLoadMap(mapTurn, mapCount)) mapLoad(mapTurn, mapCount);
 
 #if defined(MOTOR_TEST)
     motorTest();

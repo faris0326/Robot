@@ -10,7 +10,7 @@ namespace {
 
 constexpr char     NVS_NAMESPACE[] = "tuning";
 constexpr char     NVS_KEY[] = "t";
-constexpr uint16_t RECORD_VERSION = 9;  // bump when Tuning changes shape
+constexpr uint16_t RECORD_VERSION = 10;  // bump when Tuning changes shape
 
 struct Record {
     uint16_t version;
@@ -19,17 +19,20 @@ struct Record {
 };
 
 // Every Tuning field is a float. The first COMMON (auto speed .. gap ms) are
-// the same in every saved version; speed control (3) follows them since v9.
+// the same in every saved version; speed control (3) follows them since v9,
+// then the two Race fields since v10.
 constexpr size_t COMMON = 10;
 constexpr size_t CRUISE_FIELDS = 3;
+constexpr size_t RACE_FIELDS = 2;
 static_assert(offsetof(Tuning, cruiseMms) == COMMON * sizeof(float), "speed control right after the common fields");
-static_assert(sizeof(Tuning) == (COMMON + CRUISE_FIELDS) * sizeof(float), "Tuning is floats only");
+static_assert(sizeof(Tuning) == (COMMON + CRUISE_FIELDS + RACE_FIELDS) * sizeof(float), "Tuning is floats only");
 
 // Older versions, read so saved sliders survive updates:
 //   1..5   the first 5 / 7 / 8 / 9 / 10 common fields
 //   6      common + downhill speed, downhill ms (removed in v9: speed control replaced it)
 //   7      common + downhill + two long-straight fields (removed)
 //   8      common + downhill + speed control
+//   9      common + speed control
 // Each record's hash covered the config.h defaults of its own fields.
 constexpr float  OLD_DOWNHILL[2] = {0.60f, 1000.0f};
 constexpr float  OLD_STRAIGHT[2] = {0.70f, 1000.0f};
@@ -50,14 +53,15 @@ uint32_t fnv(const void* data, size_t bytes) {
 // An old version's field count, its defaults (for the hash) and where its
 // speed-control fields sit (-1 = none). False for an unknown version.
 bool oldLayout(uint16_t version, float* defaults, size_t& count, int& cruiseAt) {
-    static const size_t COUNT[] = {0, 5, 7, 8, 9, 10, 12, 14, 15};
-    if (version < 1 || version > 8) return false;
+    static const size_t COUNT[] = {0, 5, 7, 8, 9, 10, 12, 14, 15, 13};
+    if (version < 1 || version > 9) return false;
     count = COUNT[version];
-    cruiseAt = version == 8 ? COMMON + 2 : -1;
+    cruiseAt = version == 8 ? COMMON + 2 : version == 9 ? COMMON : -1;
     Tuning d = settingsDefaults();
     const float* now = reinterpret_cast<const float*>(&d);
     memcpy(defaults, now, min(count, COMMON) * sizeof(float));
-    if (version >= 6) memcpy(defaults + COMMON, OLD_DOWNHILL, sizeof OLD_DOWNHILL);
+    if (version >= 6 && version <= 8) memcpy(defaults + COMMON, OLD_DOWNHILL, sizeof OLD_DOWNHILL);
+    if (version == 9) memcpy(defaults + COMMON, now + COMMON, CRUISE_FIELDS * sizeof(float));
     if (version == 7) memcpy(defaults + COMMON + 2, OLD_STRAIGHT, sizeof OLD_STRAIGHT);
     if (version == 8) memcpy(defaults + COMMON + 2, now + COMMON, CRUISE_FIELDS * sizeof(float));
     return true;
@@ -73,7 +77,7 @@ uint32_t defaultsHash() {
 
 Tuning settingsDefaults() {
     return {BASE_SPEED, MANUAL_MAX_SPEED, KP, KD, MOTOR_TRIM, CORNER_BRAKE_MS, PIVOT_SPEED, CAL_SPIN_SPEED,
-            POSITION_SMOOTH_MS, GAP_STRAIGHT_MS, CRUISE_MMS, CRUISE_KP, CRUISE_KI};
+            POSITION_SMOOTH_MS, GAP_STRAIGHT_MS, CRUISE_MMS, CRUISE_KP, CRUISE_KI, RACE_TOP_MMS, RACE_GRIP};
 }
 
 bool settingsLoad(Tuning& out) {
@@ -179,6 +183,48 @@ bool settingsSaveLineWhite(bool white) {
     bool ok = prefs.putUChar(LINE_KEY, white ? 1 : 0) == 1;
     prefs.end();
     return ok;
+}
+
+namespace {
+constexpr char     MAP_NAMESPACE[] = "map";
+constexpr char     MAP_KEY[] = "turn";
+constexpr uint16_t MAP_VERSION = 1;
+struct MapHeader {
+    uint16_t version;
+    uint16_t count;
+    float    segMm;  // a map recorded with another segment length is ignored
+};
+}  // namespace
+
+bool settingsSaveMap(const uint8_t* turn, uint16_t count) {
+    static uint8_t buf[sizeof(MapHeader) + MAP_MAX_SEGMENTS];
+    if (count > MAP_MAX_SEGMENTS) return false;
+    MapHeader h = {MAP_VERSION, count, MAP_SEG_MM};
+    memcpy(buf, &h, sizeof h);
+    memcpy(buf + sizeof h, turn, count);
+    Preferences prefs;
+    if (!prefs.begin(MAP_NAMESPACE, false)) return false;
+    size_t len = sizeof h + count;
+    bool ok = prefs.putBytes(MAP_KEY, buf, len) == len;
+    prefs.end();
+    return ok;
+}
+
+bool settingsLoadMap(uint8_t* turn, uint16_t& count) {
+    static uint8_t buf[sizeof(MapHeader) + MAP_MAX_SEGMENTS];
+    nvs_handle_t h;
+    if (nvs_open(MAP_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;  // never learned
+    size_t len = sizeof buf;
+    bool read = nvs_get_blob(h, MAP_KEY, buf, &len) == ESP_OK;
+    nvs_close(h);
+    MapHeader hd;
+    if (!read || len < sizeof hd) return false;
+    memcpy(&hd, buf, sizeof hd);
+    if (hd.version != MAP_VERSION || hd.segMm != MAP_SEG_MM || hd.count > MAP_MAX_SEGMENTS ||
+        len != sizeof hd + hd.count) return false;
+    memcpy(turn, buf + sizeof hd, hd.count);
+    count = hd.count;
+    return true;
 }
 
 void settingsErase() {

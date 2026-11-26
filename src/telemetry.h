@@ -8,6 +8,7 @@
 //          "enc" (wheel speeds measured),
 //          (the INA219 measures the battery, not the 5 V rail), calibration
 //          "saved"/"default", line colour "white", tuning)
+//   text   {"type":"map","n":..,"c":..,"seg":..,"saved":..} after a Learn run
 //   text   {"type":"stats",...}   once a second: CPU load per core, control loop
 //          load, heap, PSRAM, chip temperature, phone RSSI, uptime (see sysmon.h),
 //          and the battery estimate (see power.h)
@@ -42,15 +43,18 @@
 // Messages from the phone (binary, little-endian):
 //   type 0x10 set mode, 2 bytes:  0 u8 type, 1 u8 mode (0 auto, 1 manual, 2 stop,
 //                                    3 calibrate: spin, save, then stop,
-//                                    4 center test: turn on the spot only)
+//                                    4 center test: turn on the spot only,
+//                                    5 learn: Auto + record the track map,
+//                                    6 race: Auto with speeds planned from the map)
 //   type 0x11 manual drive, 5 bytes: 0 u8 type, 1 i16 throttle x10000,
 //                                    3 i16 steer x10000
-//   type 0x12 tuning, 53 bytes: 0 u8 type, then f32 each: 1 auto speed,
+//   type 0x12 tuning, 61 bytes: 0 u8 type, then f32 each: 1 auto speed,
 //                                  5 manual max, 9 kp, 13 kd, 17 motor trim,
 //                                  21 corner brake ms, 25 spin speed,
 //                                  29 calibrate spin speed, 33 smoothing ms,
 //                                  37 hill/gap straight ms, 41 speed-control
-//                                  target mm/s, 45 its KP, 49 its KI
+//                                  target mm/s, 45 its KP, 49 its KI,
+//                                  53 race top speed mm/s, 57 race grip m/s^2
 //                                  (the robot clamps every field; a shorter
 //                                  older message keeps the fields it lacks)
 //   type 0x13 reset tuning, 1 byte: erase the saved tuning, back to config.h

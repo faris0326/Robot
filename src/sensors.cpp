@@ -27,6 +27,10 @@ uint32_t  bits = 0;
 LineState state = LineState::Lost;
 float     lastSeen = 0.0f;
 int8_t    lastSide = 0;    // -1 / +1: side the line was last clearly seen on
+SideReason sideWhy = SideReason::None;
+uint16_t  history[LOSS_HISTORY];  // ring of sensor bits, for the line-loss record
+uint8_t   historyAt = 0;
+uint32_t  historyMs = 0;
 uint32_t  edgeMs = 0;      // millis() when an outer sensor last saw the line
 bool      gapLoss = false; // the line went from the middle (InGap), not off a side
 int8_t    corner = 0;      // -1 / +1: a corner to that side is under the array
@@ -92,6 +96,8 @@ Split splitHistogram(const uint16_t* h) {
 
 }  // namespace
 
+float readPositionNow();
+
 void sensorsBegin() {
     pinMode(PIN_IR_LED, OUTPUT);
     digitalWrite(PIN_IR_LED, HIGH);  // emitters on
@@ -109,7 +115,24 @@ void sensorsBegin() {
     weightScale = maxWeight > 0.0f ? 1.0f / maxWeight : 1.0f;
 }
 
+namespace {
+// Keep the bits of the read just made, every LOSS_SAMPLE_MS.
+void recordHistory() {
+    uint32_t now = millis();
+    if (now - historyMs < LOSS_SAMPLE_MS) return;
+    historyMs = now;
+    history[historyAt] = (uint16_t)bits;
+    historyAt = (historyAt + 1) % LOSS_HISTORY;
+}
+}  // namespace
+
 float readPosition() {
+    float p = readPositionNow();
+    recordHistory();
+    return p;
+}
+
+float readPositionNow() {
     if (wantWhite != lineWhite) {
         lineWhite = wantWhite;
         sensorsSetCalibration(sensorsCalibration());  // swaps line/background
@@ -165,16 +188,30 @@ float readPosition() {
     for (uint8_t i = 0; i < IR_COUNT; i++) {
         if ((bits >> i & 1) && (i == 0 || !(bits >> (i - 1) & 1))) patches++;
     }
+    float measured = constrain(sum / total * weightScale, -1.0f, 1.0f);
     crossing = patches >= 2 || __builtin_popcount(bits) >= CROSSING_MIN_SENSORS;
-    if (!crossing) lastSeen = constrain(sum / total * weightScale, -1.0f, 1.0f);
+    if (!crossing) lastSeen = measured;
 
     // Which way the line went. At a 90-degree corner the side branch reaches
     // one outer sensor, then the line can vanish under the middle sensors
-    // last, so the sign of the very last position would be a guess.
+    // last, so the sign of the very last position would be a guess. A wide
+    // single patch leaning to one side is a corner's branch too, even if it
+    // stops short of the outer sensor: it gives the side (the held position
+    // from before the corner would not), and it counts like an outer sensor,
+    // so losing the line next means a corner, not a gap.
     bool leftEdge = level[0] > IR_ON_LINE, rightEdge = level[IR_COUNT - 1] > IR_ON_LINE;
-    if (leftEdge || rightEdge) edgeMs = millis();
-    if (leftEdge != rightEdge) lastSide = leftEdge ? -1 : 1;
-    else if (fabsf(lastSeen) > LOST_SIDE_MIN) lastSide = lastSeen < 0.0f ? -1 : 1;
+    bool branch = crossing && patches == 1 && leftEdge == rightEdge && fabsf(measured) > LOST_SIDE_MIN;
+    if (leftEdge || rightEdge || branch) edgeMs = millis();
+    if (leftEdge != rightEdge) {
+        lastSide = leftEdge ? -1 : 1;
+        sideWhy = leftEdge ? SideReason::LeftEdge : SideReason::RightEdge;
+    } else if (branch) {
+        lastSide = measured < 0.0f ? -1 : 1;
+        sideWhy = SideReason::Branch;
+    } else if (fabsf(lastSeen) > LOST_SIDE_MIN) {
+        lastSide = lastSeen < 0.0f ? -1 : 1;
+        sideWhy = SideReason::Position;
+    }
 
     // A corner's side branch makes the line wide and reaches one outer sensor.
     if (leftEdge != rightEdge && __builtin_popcount(bits) >= CORNER_MIN_SENSORS) corner = lastSide;
@@ -184,6 +221,12 @@ float readPosition() {
 uint32_t  sensorsBits() { return bits; }
 int8_t    sensorsCorner() { return corner; }
 int8_t    sensorsLastSide() { return lastSide; }
+
+void sensorsLossRecord(uint16_t* out, SideReason& why, int8_t& side) {
+    for (uint8_t i = 0; i < LOSS_HISTORY; i++) out[i] = history[(historyAt + i) % LOSS_HISTORY];
+    why = sideWhy;
+    side = lastSide;
+}
 bool      sensorsCrossing() { return crossing; }
 LineState lineState()   { return state; }
 

@@ -9,6 +9,7 @@
 #include "motors.h"
 #include "sensors.h"
 #include "shared.h"
+#include "track_map.h"
 
 static_assert(CONTROL_PERIOD_US % 1000 == 0, "control loop is paced by the 1 ms FreeRTOS tick");
 
@@ -52,13 +53,29 @@ bool     brakeArmed = false;
 uint32_t brakeUntilMs = 0;
 uint32_t plainSinceMs = 0;  // following a plain line (no corner) since
 
+// Line-following modes: Auto, and Learn / Race (Auto with the track map).
+bool followsLine(DriveMode m) { return m == DriveMode::Auto || m == DriveMode::Learn || m == DriveMode::Race; }
+
+bool encodersMeasured() { return ENCODERS_FITTED && ENC_COUNTS_PER_REV > 0.0f; }
+
 // Speed control is on when the encoders are measured and a target is set.
-bool cruiseOn(const Tuning& t) { return ENCODERS_FITTED && ENC_COUNTS_PER_REV > 0.0f && t.cruiseMms > 0.0f; }
+bool cruiseOn(const Tuning& t) { return encodersMeasured() && t.cruiseMms > 0.0f; }
+
+float measuredSpeed() { return (encoderSpeedMms(false) + encoderSpeedMms(true)) * 0.5f; }
+
+// Forward speed to hold, mm/s; 0 = fixed power ("Auto speed"). Race follows
+// the map's plan; otherwise the speed-control target if it is on.
+float speedTarget(DriveMode mode, const Tuning& t) {
+    if (mode == DriveMode::Race && encodersMeasured() && mapReady()) {
+        return mapRaceTarget(encoderCount(false), encoderCount(true), measuredSpeed());
+    }
+    return cruiseOn(t) ? t.cruiseMms : 0.0f;
+}
 
 // Base speed that holds targetMms (fraction of the voltage limit). The
 // wheel speed at base 1.0 grows with the dev voltage unlock.
 float cruiseBase(float targetMms, float dt, const Tuning& t) {
-    float measured = (encoderSpeedMms(false) + encoderSpeedMms(true)) * 0.5f;
+    float measured = measuredSpeed();
     float mmsAtFull = SPEED_AT_FULL_MMS * motorsVoltageLimit() / MOTOR_RATED_V;
     return controlCruise(targetMms, measured, dt, t.cruiseKp, t.cruiseKi, mmsAtFull);
 }
@@ -121,8 +138,8 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         sensorsCalibrateAbort();
     }
 
-    // The corner brake only arms while following the line in Auto.
-    if (!running || cmd.mode != DriveMode::Auto) {
+    // The corner brake only arms while following the line (Auto, Learn, Race).
+    if (!running || !followsLine(cmd.mode)) {
         controlCruiseReset();
         brakeArmed = false;
         brakeUntilMs = 0;
@@ -149,11 +166,24 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
         if (!wasLost) {
             wasLost = true;
             lostSinceMs = millis();
+            // For the phone: what the sensors saw just before the line went.
+            LossRecord rec;
+            SideReason why;
+            sensorsLossRecord(rec.bits, why, rec.side);
+            rec.why = (uint8_t)why;
+            rec.state = (uint8_t)state;
+            sharedSetLoss(rec);
+            // A corner in a Race run: line the distance up with the map's corner.
+            if (state == LineState::Lost && cmd.mode == DriveMode::Race) {
+                mapRaceCorner(encoderCount(false), encoderCount(true));
+            }
         }
         uint32_t timeout = LOST_TIMEOUT_MS + (state == LineState::InGap ? (uint32_t)t.gapMs : 0);
         if (millis() - lostSinceMs > timeout) {
             motorsStop();
             plainSinceMs = millis();  // re-arm only after following again
+            // The end of the track: a Learn run saves its map, Race is over.
+            if (cmd.mode == DriveMode::Learn || cmd.mode == DriveMode::Race) sharedSetMode(DriveMode::Stop);
             return pos;
         }
     } else {
@@ -162,8 +192,9 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
 
     // Kill the speed before a sharp corner. Line following restarts with a
     // fresh derivative afterwards (following stays false).
+    // Race plans its own braking from the map: no timed brake there.
     bool hold = cmd.mode == DriveMode::Hold;
-    if (!hold && cornerBrake(state, t)) {
+    if (!hold && cmd.mode != DriveMode::Race && cornerBrake(state, t)) {
         motorsSet(-1.0f, -1.0f);
         return pos;
     }
@@ -176,7 +207,8 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
             motorsStop();
         } else if (millis() - lostSinceMs < (uint32_t)t.gapMs) {
             // Full speed to get over the top.
-            float s = cruiseOn(t) ? cruiseBase(t.cruiseMms, dt, t) : t.autoSpeed;
+            float target = speedTarget(cmd.mode, t);
+            float s = target > 0.0f ? cruiseBase(target, dt, t) : t.autoSpeed;
             motorsSet(s, s);
         } else if (int8_t side = sensorsLastSide()) {
             float s = side * t.pivotSpeed;
@@ -208,7 +240,8 @@ float step(bool running, const DriveCommand& cmd, const Tuning& t, float dt) {
     }
 
     float l, r;
-    if (cruiseOn(t)) controlMix(pos, dt, cruiseBase(t.cruiseMms, dt, t), l, r);
+    float target = speedTarget(cmd.mode, t);
+    if (target > 0.0f) controlMix(pos, dt, cruiseBase(target, dt, t), l, r);
     else controlUpdate(pos, dt, l, r);
     motorsSet(l, r);
     return pos;
@@ -218,6 +251,7 @@ void controlTask(void*) {
     TickType_t lastWake = xTaskGetTickCount();
     uint32_t   lastStartUs = micros();
     uint32_t   seq = 0;
+    DriveMode  prevMode = DriveMode::Stop;
 
     uint32_t winLoopMax = 0, winPeriodMax = 0, winCount = 0;
     uint16_t loopMaxUs = 0, periodMaxUs = 0;
@@ -235,8 +269,21 @@ void controlTask(void*) {
         DriveCommand cmd = sharedCommand();
         Tuning tune = sharedTuning();
         applyTuning(tune);
+
+        // Track map: a Learn run records from the moment it is chosen and
+        // keeps the map when it ends; a Race run plans its speeds as it starts.
+        if (cmd.mode != prevMode) {
+            int32_t cl = encoderCount(false), cr = encoderCount(true);
+            if (prevMode == DriveMode::Learn) mapLearnEnd();
+            if (cmd.mode == DriveMode::Learn) mapLearnBegin(cl, cr);
+            if (cmd.mode == DriveMode::Race) mapRaceBegin(cl, cr, tune.raceTopMms, tune.raceGrip * 1000.0f);
+            prevMode = cmd.mode;
+        }
         encodersUpdate();
         float pos = step(running, cmd, tune, period * 1e-6f);
+        if (cmd.mode == DriveMode::Learn && running && encodersMeasured()) {
+            mapLearnStep(encoderCount(false), encoderCount(true));
+        }
 
         LapEvent lap;
         if (LAP_TIMING_ENABLED && running && cmd.mode == DriveMode::Auto &&

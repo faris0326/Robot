@@ -119,8 +119,10 @@ constexpr uint8_t PIN_ENC_R_C2 = 13;
 // MEASURE with the enctest env: turn each wheel one full turn forward by hand.
 // The count must go UP (else set the INVERT flag) and its size is the counts
 // per wheel turn. 0 = not measured yet: speeds then read 0.
-constexpr bool    ENC_L_INVERT = false;
-constexpr bool    ENC_R_INVERT = true;           // measured 2026-11-24: counted down going forward
+// Signs fixed 2026-11-24 from a real Learn run (driving forward measured
+// -3.5 m with the hand-test signs, which had been turned the other way).
+constexpr bool    ENC_L_INVERT = true;
+constexpr bool    ENC_R_INVERT = false;
 constexpr float   ENC_COUNTS_PER_REV = 300.0f;   // measured 2026-11-24: L +303, R ~-300 per turn
 constexpr float   WHEEL_DIAMETER_MM = 33.3f;
 constexpr uint32_t ENC_SPEED_WINDOW_MS = 20;    // speed = counts over this window
@@ -153,7 +155,7 @@ constexpr uint16_t IR_CAL_MIN_CONTRAST = 250;
 
 // Calibration run (phone "Calibrate" button): with the robot on the line, it
 // spins right, left, right on the spot while recording each sensor's min/max.
-constexpr float    CAL_SPIN_SPEED  = 1.0f;   // fraction of rated voltage (1.0 = full, 3 V); live on the phone
+constexpr float    CAL_SPIN_SPEED  = 0.5f;   // fraction of the voltage limit (0.5 = 3 V); live on the phone
 constexpr uint32_t CAL_DURATION_MS = 2400;   // 1/4 right, 1/2 left, 1/4 right
 
 // ---------------------------------------------------------------------------
@@ -164,11 +166,11 @@ constexpr uint32_t CAL_DURATION_MS = 2400;   // 1/4 right, 1/2 left, 1/4 right
 constexpr uint32_t CONTROL_PERIOD_US = 1000;  // 1 kHz
 
 // Speeds are fractions of the motors' rated voltage (1.0 = 3 V).
-constexpr float BASE_SPEED = 1.00f;  // speed when the line is centred
-constexpr float KP         = 0.40f;  // speed difference per unit of position
+constexpr float BASE_SPEED = 0.25f;  // speed when the line is centred (1.5 V: v1success's 50 % of 3 V)
+constexpr float KP         = 0.50f;  // speed difference per unit of position (v1success 1.0 at 3 V)
 // D term: speed per (position unit per second). 0 = P only. Tune live from
 // the phone: raise KP until the robot weaves, then raise KD until it settles.
-constexpr float KD         = 0.000f;
+constexpr float KD         = 0.0025f;  // v1success 0.005 at 3 V
 // The derivative of position is low-pass filtered with this time constant.
 constexpr float KD_FILTER_MS = 10.0f;
 // The position itself is smoothed (low-pass, this time constant) before KP
@@ -182,7 +184,7 @@ constexpr float POSITION_SMOOTH_MS = 4.0f;
 
 // Sharp (90-degree) corners: when no sensor sees the line, the robot spins on
 // the spot toward the side it went, wheels in opposite directions.
-constexpr float PIVOT_SPEED   = 0.60f;  // fraction of rated voltage
+constexpr float PIVOT_SPEED   = 0.30f;  // fraction of the voltage limit (1.8 V, as with the 3 V motors)
 // Corner brake: both wheels in full reverse for this long, once per corner,
 // when the corner shows or the line is lost, so the robot doesn't slide past
 // the corner before it can spin back to it. 0 = off. Live on the phone.
@@ -196,6 +198,10 @@ constexpr uint8_t  CORNER_MIN_SENSORS = 4;
 // corner looks wide too: held straight, its line then runs out to that side
 // and the lost-line logic turns into it.
 constexpr uint8_t  CROSSING_MIN_SENSORS = 4;
+// Line-loss record for the phone (debugging corners): the sensor bits every
+// LOSS_SAMPLE_MS, the last LOSS_HISTORY of them, sent when the line is lost.
+constexpr uint32_t LOSS_SAMPLE_MS = 5;
+constexpr uint8_t  LOSS_HISTORY   = 24;   // 120 ms
 // The brake re-arms after this long following a plain line, so it can't fire
 // again in the same corner, nor from a standstill right after a start.
 constexpr uint32_t CORNER_REARM_MS    = 200;
@@ -223,6 +229,21 @@ constexpr float CRUISE_KI         = 4.0f;     // per second
 // MEASURE (Manual, full stick straight ahead, read "Wheel speed" on the phone).
 constexpr float SPEED_AT_FULL_MMS = 1500.0f;
 constexpr float CRUISE_MIN_BASE   = -0.5f;    // most reverse the cruise may use (holding back downhill)
+
+// Track map (phone "Learn" / "Race" modes, needs the encoders; track_map.h).
+// Learn records the turn ratio every MAP_SEG_MM; Race plans the speeds from it
+// with "Race · top speed" and "Race · grip" (sliders, defaults below).
+constexpr float    MAP_SEG_MM        = 25.0f;
+constexpr uint16_t MAP_MAX_SEGMENTS  = 800;     // 20 m of track
+constexpr uint16_t MAP_MIN_SEGMENTS  = 4;       // 0.1 m: a shorter Learn run is not kept (an accidental tap)
+constexpr float    WHEEL_TRACK_MM    = 95.0f;   // wheel centre to wheel centre (from the chassis design)
+constexpr float    MAP_STRAIGHT_TURN = 0.02f;   // turn ratio below this = straight
+constexpr float    MAP_CORNER_TURN   = 0.60f;   // turn ratio from this = a corner (spin), used to re-sync
+constexpr float    MAP_MIN_MMS       = 250.0f;  // slowest planned speed
+constexpr float    MAP_LAG_S         = 0.15f;   // plan ahead by this much time (speed-control lag)
+constexpr float    MAP_SYNC_MM       = 300.0f;  // a corner re-syncs to a map corner within this distance
+constexpr float    RACE_TOP_MMS      = 1000.0f;
+constexpr float    RACE_GRIP         = 2.0f;    // m/s^2: braking and cornering the tyres can take (careful start)
 constexpr uint32_t GAP_EDGE_RECENT_MS = 150;
 
 // No sensor sees the line for longer than this (plus gapMs after a gap) ->
@@ -235,13 +256,15 @@ constexpr uint32_t LOST_TIMEOUT_MS = 1500;
 // Calibrate runs the sensor calibration spin, then switches to Stop.
 // Hold = the phone's "Center test": no forward speed, only the PD steering
 // (live KP/KD), so the robot turns on the spot to keep the line in the middle.
-enum class DriveMode : uint8_t { Auto = 0, Manual = 1, Stop = 2, Calibrate = 3, Hold = 4 };
+// Learn = Auto that also records the track map; Race = Auto with the speed
+// planned from the map. Both end in Stop when the line is lost for good.
+enum class DriveMode : uint8_t { Auto = 0, Manual = 1, Stop = 2, Calibrate = 3, Hold = 4, Learn = 5, Race = 6 };
 
 constexpr DriveMode BOOT_MODE = DriveMode::Stop;  // mode after power-on: don't move until told
 
 // Manual: phone joystick. Throttle and steer are mixed into left/right
 // speed, then scaled so full stick gives at most MANUAL_MAX_SPEED.
-constexpr float    MANUAL_MAX_SPEED  = 1.00f;  // fraction of rated voltage (1.0 = 3 V)
+constexpr float    MANUAL_MAX_SPEED  = 0.50f;  // fraction of the voltage limit (0.5 = 3 V)
 // The phone sends ~30 commands/s while in Manual. If none arrive for this
 // long (Wi-Fi drop, phone locked), the motors brake.
 constexpr uint32_t MANUAL_TIMEOUT_MS = 300;
@@ -268,7 +291,7 @@ constexpr float    LAP_LOCKOUT_FRACTION  = 0.7f;      // then: this x the time b
 constexpr char     WIFI_SSID[]      = "Faris's_ESP";
 constexpr char     WIFI_PASS[]      = "12345678";  // 8..63 characters, or "" for an open network
 constexpr uint8_t  WIFI_CHANNEL     = 6;
-constexpr uint8_t  WIFI_MAX_CLIENTS = 2;
+constexpr uint8_t  WIFI_MAX_CLIENTS = 4;   // phones + a Mac for OTA; a device that just left can hold a slot for minutes
 constexpr uint16_t WS_PORT          = 81;  // WebSocket; the page is on port 80
 // Over-the-air uploads (ota.h). The port must match upload_flags in
 // platformio.ini [env:robot_ota]; the password lives there too ([ota]).
